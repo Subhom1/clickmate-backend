@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 
 const InterestSchema = new mongoose.Schema(
   {
-    interest: [String],
+    interest: [{text: { type: String, unique: true, required: true }}],
   },
   {
     collection: "interest",
