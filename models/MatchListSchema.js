@@ -25,6 +25,6 @@ const MatchListSchema = new mongoose.Schema(
   }
 );
 
-const MatchList = mongoose.model("match_list", matchListSchema);
+const MatchList = mongoose.model("match_list", MatchListSchema);
 
 export default MatchList;
