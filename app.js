@@ -137,10 +137,10 @@ app.delete("/deleteUser/:uid/:fuid", async (req, res) => {
   }
 });
 const ongoingSearches = new Map();
-const searchTimeoutDuration = 30000; // 20 seconds
-const checkInterval = 1000; // 1 second
+const searchTimeoutDuration = 30000; // 30 seconds
+const checkInterval = 2000; // 1 second
 
-const runPythonScript = (text1, text2) => {
+const runPythonScript = async (text1, text2) => {
   return new Promise((resolve, reject) => {
     const process = spawn("python3", [
       "scripts/calculate_similarity.py",
@@ -174,247 +174,416 @@ const runPythonScript = (text1, text2) => {
   });
 };
 
-const findMatches = async (userId, query, socket) => {
-  let cancelled = false; // Flag to track if the search has been cancelled
+const lockUser = async (userId) => {
+  const user = await UserSearch.findOneAndUpdate(
+    { userId, isLocked: { $ne: true } },
+    { isLocked: true },
+    { new: true }
+  );
+  return user != null;
+};
 
-  // Function to cancel the search
-  const cancel = () => {
-    cancelled = true;
-  };
+const unlockUser = async (userId) => {
+  await UserSearch.findOneAndUpdate({ userId }, { isLocked: false });
+};
+const matchList = new Map();
+const findMatch = async (userId, query, socket) => {
+  console.log("findMatch function called for User ID:", userId);
 
-  let attempts = 0; // Initialize the attempts counter
-  const maxAttempts = searchTimeoutDuration / checkInterval; // Calculate the maximum number of attempts based on the total search timeout duration and the interval between attempts
+  let attempts = 0;
+  const maxAttempts = searchTimeoutDuration / checkInterval;
 
-  // Function to lock a user for searching to prevent concurrent operations on the same user
-  const lockUser = async (userId) => {
-    const user = await UserSearch.findOneAndUpdate(
-      { userId, isLocked: { $ne: true } }, // Find the user who is not already locked
-      { isLocked: true }, // Set the user's isLocked field to true
-      { new: true } // Return the updated document
-    );
-    return user != null; // Return true if the user was successfully locked, false otherwise
-  };
-
-  // Function to unlock a user after searching
-  const unlockUser = async (userId) => {
-    await UserSearch.findOneAndUpdate({ userId }, { isLocked: false });
-  };
-
-  // Function to check for potential matches for the given user
   const checkForMatches = async () => {
-    if (cancelled) return; // Exit if the search has been cancelled
+    if (matchList.has(userId)) return;
 
-    attempts++; // Increment the attempts counter
+    attempts++;
 
     try {
-      const lockAcquired = await lockUser(userId); // Attempt to lock the user
-      if (!lockAcquired) {
-        // If the lock was not acquired
-        if (attempts < maxAttempts) {
-          // If the maximum number of attempts has not been reached
-          setTimeout(checkForMatches, checkInterval); // Retry after a specified interval
-        } else {
-          console.log(ongoingSearches, "ongoing users 1");
-          // If the maximum number of attempts has been reached
-          ongoingSearches?.get(userId)?.socket.emit("search_update", {
-            matches: [],
-            message: "No matching results found",
-          });
-          await UserSearch.deleteOne({ userId }); // Delete the user's search record from the database
-          ongoingSearches.delete(userId); // Remove the user's search from the ongoing searches map
-        }
-        return;
-      }
+      const allOtherQueries = await UserSearch.find({
+        isLocked: false,
+        userId: { $ne: userId },
+      }).lean(); // Use lean() to improve performance by returning plain JavaScript objects
 
-      // Check if the user is already in a match
-      const existingMatch = await MatchList.findOne({
-        $or: [{ user1: userId }, { user2: userId }],
-      });
+      console.log(
+        `Attempt ${attempts}: Found ${allOtherQueries.length} other queries`
+      );
 
-      if (existingMatch) {
-        // If a match already exists for the user
-        await unlockUser(userId); // Unlock the user
-        ongoingSearches.delete(userId); // Remove the user's search from the ongoing searches map
-        return;
-      }
+      let bestMatch = null;
+      let highestSimilarity = 0;
 
-      // Find all matched user IDs
-      const matchedUserIds = await MatchList.find({}).distinct("user2");
-      // Find all searches that are not locked and exclude the matched users and the current user
-      const searches = await UserSearch.find({
-        userId: { $ne: userId, $nin: matchedUserIds },
-        isLocked: { $ne: true },
-      });
+      // if (existingMatch) {
+      //   ongoingSearches.delete(userId);
+      //   return;
+      // }
+      for (let q of allOtherQueries) {
+        const otherUserId = q.userId.toString();
+        const isMatchExist = matchList.has(otherUserId);
+        if (isMatchExist) continue;
 
-      for (const search of searches) {
-        if (cancelled) break; // Exit if the search has been cancelled
+        try {
+          const result = await runPythonScript(q.query, query);
+          const similarity = result.similarity_score;
 
-        const lockAcquiredForSearch = await lockUser(search.userId.toString()); // Attempt to lock the potential match user
-        if (!lockAcquiredForSearch) continue; // If the lock was not acquired, continue to the next potential match
+          console.log(
+            `Comparing User ID ${userId} with User ID ${otherUserId}: Similarity = ${similarity}`
+          );
 
-        const similarityResult = await runPythonScript(query, search.query); // Calculate the similarity between the current user's query and the potential match's query
-        const similarity = similarityResult.similarity_score; // Extract the similarity score
-
-        if (similarity >= 0.4) {
-          // If a match is found based on the similarity threshold
-          const user2 = search.userId.toString(); // Get the ID of the matched user
-
-          // Check if the potential match user is already in a match
-          const alreadyMatched = await MatchList.findOne({
-            $or: [{ user1: user2 }, { user2: user2 }],
-          });
-
-          if (alreadyMatched) {
-            // If the potential match user is already in a match
-            await unlockUser(user2); // Unlock the potential match user
-            continue; // Continue to the next potential match
+          if (similarity > highestSimilarity) {
+            bestMatch = otherUserId;
+            highestSimilarity = similarity;
           }
-
-          // Create a new match record
-          await MatchList.create({ user1: userId, user2, similarity });
-
-          // Delete the search records for both users
-          await UserSearch.deleteOne({ userId: user2 });
-          await UserSearch.deleteOne({ userId });
-
-          const matchedUser = await UserDetail.findOne({ _id: user2 }); // Retrieve the matched user's details
-          socket.emit("search_update", {
-            matches: [{ user: matchedUser, similarity }],
-          });
-
-          // Notify the matched user if they have an active WebSocket connection
-          const matchedUserSocket = ongoingSearches.get(user2)?.socket;
-          if (matchedUserSocket) {
-            matchedUserSocket.emit("search_update", {
-              matches: [
-                { user: await UserDetail.findOne({ _id: userId }), similarity },
-              ],
-            });
-            ongoingSearches.delete(user2); // Remove the matched user's search from the ongoing searches map
-          }
-
-          // Unlock both users and clean up the ongoing searches
-          await unlockUser(userId);
-          await unlockUser(user2);
-          ongoingSearches.delete(userId);
-          return;
-        } else {
-          await unlockUser(search.userId.toString()); // Unlock the potential match user if no match is found
+        } catch (error) {
+          console.error("Error running Python script:", error);
         }
       }
+      console.log("bestMatch:", bestMatch);
+      if (
+        bestMatch &&
+        highestSimilarity >= 0.5 &&
+        !matchList.has(bestMatch) &&
+        !matchList.has(userId)
+      ) {
+        const userLocked = await lockUser(userId);
+        const matchLocked = await lockUser(bestMatch);
+        // if (matchLocked && userLocked) {
+        const matchedSocket = ongoingSearches.get(bestMatch)?.socket;
+        if (matchedSocket) {
+          matchedSocket.emit("search_update", {
+            matches: 
+              {
+                user: await UserDetail.findOne({ _id: userId }),
+                similarity: highestSimilarity,
+              },
+            
+            message: "Search result found",
+          });
+        }
+        const selfSocket = ongoingSearches.get(userId)?.socket;
+        if (selfSocket) {
+          selfSocket.emit("search_update", {
+            matches: 
+              {
+                user: await UserDetail.findOne({ _id: bestMatch }),
+                similarity: highestSimilarity,
+              },
+            
+            message: "Search result found",
+          });
+        }
+        matchList.set(userId, { match: bestMatch });
+        matchList.set(bestMatch, { match: userId });
+        await UserSearch.deleteOne({ userId });
+        await UserSearch.deleteOne({ userId: bestMatch });
+        ongoingSearches.delete(userId);
+        ongoingSearches.delete(bestMatch);
 
-      await unlockUser(userId); // Unlock the current user if no match is found
+        console.log(
+          `Match found and users ${userId} and ${bestMatch} removed from search`
+        );
+        return;
+        // } else {
+        //   console.log(`Could not lock User ID: ${bestMatch} for final match`);
+        // }
+      }
 
       if (attempts < maxAttempts) {
-        // If the maximum number of attempts has not been reached
-        setTimeout(checkForMatches, checkInterval); // Retry after a specified interval
+        setTimeout(checkForMatches, checkInterval);
       } else {
-        // If the maximum number of attempts has been reached
-        console.log(ongoingSearches, "ongoing users");
         socket.emit("search_update", {
           matches: [],
-          message: "No matching results found",
+          message: "No result found",
         });
-        await UserSearch.deleteOne({ userId }); // Delete the user's search record from the database
-        ongoingSearches.delete(userId); // Remove the user's search from the ongoing searches map
+        await UserSearch.deleteOne({ userId });
+        ongoingSearches.delete(userId);
+        console.log(
+          "Timeout reached, no match found",
+          "matchList:",
+          matchList,
+          "ongoingSearches:",
+          ongoingSearches
+        );
       }
-    } catch (error) {
-      if (cancelled) return; // Exit if the search has been cancelled
-      console.error("Error during match checking:", error); // Log the error
+    } catch (err) {
+      console.error("Error during match checking:", err);
       socket.emit("error", {
         message: "An error occurred while checking for matches.",
       });
-      await unlockUser(userId); // Ensure the user is unlocked
-      ongoingSearches.delete(userId); // Remove the user's search from the ongoing searches map
+      await unlockUser(userId);
+      ongoingSearches.delete(userId);
     }
   };
 
-  checkForMatches(); // Start the match checking process
-
-  return cancel; // Return the cancel function to allow the search to be cancelled
+  checkForMatches();
+  // const userLocked = await lockUser(userId);
+  // if (userLocked) {
+  // } else {
+  //   socket.emit("error", { message: "Unable to lock user for searching." });
+  // }
 };
 
-// WebSocket connection event handler
 io.on("connection", (socket) => {
-  console.log("New WebSocket connection"); // Log the new connection
+  console.log("New WebSocket connection");
 
-  // mongoose.connection.db.dropCollection("search"); // Drop the 'search' collection
-  mongoose.connection.db.dropCollection("match_list"); // Drop the 'match_list' collection
-
-  // Event handler for keyword submission
-  socket.on("submit_keyword", async (data) => {
-    const { userId, query } = data; // Extract userId and query from the submitted data
-
+  socket.on("submit_keyword", async ({ userId, query }) => {
     if (!userId || !query) {
-      // If either userId or query is missing
-      socket.emit("error", { message: "UserId and query are required." }); // Send an error message to the client
+      socket.emit("error", { message: "UserId and query are required." });
       return;
     }
 
     try {
-      // Update the user's search record in the database, or create a new one if it doesn't exist
       await UserSearch.findOneAndUpdate(
         { userId },
         { query, created_at: new Date(), isLocked: false },
         { upsert: true }
       );
 
-      if (ongoingSearches.has(userId)) {
-        // If there is an ongoing search for the user
-        ongoingSearches.get(userId).cancel(); // Cancel the ongoing search
-        ongoingSearches.delete(userId); // Remove the user's search from the ongoing searches map
-      }
-
-      // Start a new search for the user
-      const cancelSearch = findMatches(userId, query, socket);
-      ongoingSearches.set(userId, { socket, cancel: cancelSearch });
-
-      // Re-check matches for all ongoing searches when a new user submits
-      ongoingSearches.forEach(
-        async ({ socket: ongoingSocket, cancel }, ongoingUserId) => {
-          if (ongoingUserId !== userId) {
-            if (typeof cancel === "function") {
-              cancel(); // Cancel the ongoing search
-            }
-            const otherQuery = (
-              await UserSearch.findOne({ userId: ongoingUserId })
-            ).query; // Get the query of the other ongoing user
-            findMatches(ongoingUserId, otherQuery, ongoingSocket); // Start a new search for the other user
-          }
-        }
-      );
+      ongoingSearches.set(userId, { socket });
+      await findMatch(userId, query, socket);
     } catch (error) {
-      console.error("Error during search submission:", error); // Log the error
-      socket.emit("error", { message: "An error occurred during the search." }); // Send an error message to the client
+      console.error("Error during search submission:", error);
+      socket.emit("error", { message: "An error occurred during the search." });
     }
   });
 
-  // Event handler for search cancellation
-  socket.on("cancel_search", async (userId) => {
-    if (ongoingSearches.has(userId)) {
-      // If there is an ongoing search for the user
-      ongoingSearches.get(userId).cancel(); // Cancel the ongoing search
-      ongoingSearches.delete(userId); // Remove the user's search from the ongoing searches map
-      await UserSearch.deleteOne({ userId }); // Delete the user's search record from the database
-      console.log(`Search cancelled for user: ${userId}`); // Log```javascript
-      console.log(`Search cancelled for user: ${userId}`); // Log the cancellation
-    }
-  });
-
-  // Event handler for WebSocket disconnection
-  socket.on("disconnect", () => {
-    ongoingSearches.forEach((value, key) => {
-      if (value.socket === socket) {
-        // If the disconnected socket is associated with an ongoing search
-        if (typeof value.cancel === "function") {
-          value.cancel(); // Cancel the ongoing search
-        }
-        ongoingSearches.delete(key); // Remove the search from the ongoing searches map
-        console.log(`Connection lost and search cancelled for user: ${key}`); // Log the disconnection and cancellation
-      }
+  socket.on("cancel_search", async (data) => {
+    const { userId } = data;
+    await UserSearch.deleteOne({ userId });
+    await unlockUser(userId);
+    ongoingSearches.delete(userId);
+    socket.emit("search_cancelled", {
+      message: "Search cancelled successfully.",
     });
   });
+
+  socket.on("disconnect", () => {
+    console.log("Socket disconnected");
+  });
 });
+
+// const findMatches = async (userId, query, socket) => {
+//   let cancelled = false;
+
+//   const cancel = () => {
+//     cancelled = true;
+//   };
+
+//   let attempts = 0;
+//   const maxAttempts = searchTimeoutDuration / checkInterval;
+
+//   const lockUser = async (userId) => {
+//     const user = await UserSearch.findOneAndUpdate(
+//       { userId, isLocked: { $ne: true } },
+//       { isLocked: true },
+//       { new: true }
+//     );
+//     return user != null;
+//   };
+
+//   const unlockUser = async (userId) => {
+//     await UserSearch.findOneAndUpdate({ userId }, { isLocked: false });
+//   };
+
+//   const checkForMatches = async () => {
+//     if (cancelled) return;
+
+//     attempts++;
+
+//     try {
+//       const lockAcquired = await lockUser(userId);
+//       if (!lockAcquired) {
+//         if (attempts < maxAttempts) {
+//           setTimeout(checkForMatches, checkInterval);
+//         } else {
+//           !cancelled &&
+//             ongoingSearches?.get(userId)?.socket.emit("search_update", {
+//               matches: [],
+//               message: "No matching results found",
+//             });
+//           await UserSearch.deleteOne({ userId });
+//           ongoingSearches.delete(userId);
+//         }
+//         return;
+//       }
+
+//       const existingMatch = await MatchList.findOne({
+//         $or: [{ user1: userId }, { user2: userId }],
+//       });
+
+//       if (existingMatch) {
+//         await unlockUser(userId);
+//         ongoingSearches.delete(userId);
+//         return;
+//       }
+
+//       const matchedUserIds = await MatchList.find({}).distinct("user2");
+//       const searches = await UserSearch.find({
+//         userId: { $ne: userId, $nin: matchedUserIds },
+//         isLocked: { $ne: true },
+//       });
+
+//       for (const search of searches) {
+//         if (cancelled) break;
+
+//         const lockAcquiredForSearch = await lockUser(search.userId.toString());
+//         if (!lockAcquiredForSearch) continue;
+
+//         const similarityResult = await runPythonScript(query, search.query);
+//         const similarity = similarityResult.similarity_score;
+
+//         if (similarity >= 0.4) {
+//           const user2 = search.userId.toString();
+
+//           const alreadyMatched = await MatchList.findOne({
+//             $or: [{ user1: user2 }, { user2: user2 }],
+//           });
+
+//           if (alreadyMatched) {
+//             await unlockUser(user2);
+//             continue;
+//           }
+
+//           await MatchList.create({ user1: userId, user2, similarity });
+
+//           await UserSearch.deleteOne({ userId: user2 });
+//           await UserSearch.deleteOne({ userId });
+
+//           const matchedUser = await UserDetail.findOne({ _id: user2 });
+//           socket.emit("search_update", {
+//             matches: [{ user: matchedUser, similarity }],
+//           });
+
+//           const matchedUserSocket = ongoingSearches.get(user2)?.socket;
+//           if (matchedUserSocket) {
+//             matchedUserSocket.emit("search_update", {
+//               matches: [
+//                 { user: await UserDetail.findOne({ _id: userId }), similarity },
+//               ],
+//             });
+//             ongoingSearches.delete(user2);
+//           }
+
+//           await unlockUser(userId);
+//           await unlockUser(user2);
+//           ongoingSearches.delete(userId);
+//           return;
+//         } else {
+//           await unlockUser(search.userId.toString());
+//         }
+//       }
+
+//       await unlockUser(userId);
+
+//       if (attempts < maxAttempts) {
+//         setTimeout(checkForMatches, checkInterval);
+//       } else {
+//         !cancelled &&
+//           socket.emit("search_update", {
+//             matches: [],
+//             message: "No matching results found",
+//           });
+//         await UserSearch.deleteOne({ userId });
+//         ongoingSearches.delete(userId);
+//       }
+//     } catch (error) {
+//       if (cancelled) return;
+//       console.error("Error during match checking:", error);
+//       socket.emit("error", {
+//         message: "An error occurred while checking for matches.",
+//       });
+//       await unlockUser(userId);
+//       ongoingSearches.delete(userId);
+//     }
+//   };
+
+//   checkForMatches();
+
+//   return cancel;
+// };
+
+// io.on("connection", (socket) => {
+//   console.log("New WebSocket connection");
+
+//   // Comment out these lines for normal operation
+//   mongoose.connection.db.dropCollection("search");
+//   mongoose.connection.db.dropCollection("match_list");
+
+//   socket.on("submit_keyword", async (data) => {
+//     const { userId, query } = data;
+
+//     if (!userId || !query) {
+//       socket.emit("error", { message: "UserId and query are required." });
+//       return;
+//     }
+
+//     try {
+//       await UserSearch.findOneAndUpdate(
+//         { userId },
+//         { query, created_at: new Date(), isLocked: false },
+//         { upsert: true }
+//       );
+
+//       if (ongoingSearches.has(userId)) {
+//         const searchObj = ongoingSearches.get(userId);
+//         if (searchObj && typeof searchObj.cancel === "function") {
+//           searchObj.cancel();
+//         }
+//         ongoingSearches.delete(userId);
+//       }
+
+//       const cancelSearch = findMatches(userId, query, socket);
+//       ongoingSearches.set(userId, { socket, cancel: cancelSearch });
+
+//       ongoingSearches.forEach(
+//         async ({ socket: ongoingSocket, cancel }, ongoingUserId) => {
+//           if (ongoingUserId !== userId) {
+//             if (typeof cancel === "function") {
+//               cancel();
+//             }
+//             const otherQuery = (
+//               await UserSearch.findOne({ userId: ongoingUserId })
+//             ).query;
+//             findMatches(ongoingUserId, otherQuery, ongoingSocket);
+//           }
+//         }
+//       );
+//     } catch (error) {
+//       console.error("Error during search submission:", error);
+//       socket.emit("error", { message: "An error occurred during the search." });
+//     }
+//   });
+
+//   socket.on("cancel_search", async (data) => {
+//     const { userId } = data;
+//     console.log(ongoingSearches, '#searches');
+//     if (ongoingSearches.has(userId)) {
+//       const searchObj = ongoingSearches.get(userId);
+//       if (searchObj && typeof searchObj.cancel === "function") {
+//         searchObj.cancel();
+//       } else {
+//         console.log("Cancel function not found or not a function");
+//       }
+//       ongoingSearches.delete(userId);
+//       await UserSearch.deleteOne({ userId });
+//       console.log(`Search cancelled for user: ${userId}`);
+//     }
+//   });
+
+//   socket.on("disconnect", () => {
+//     ongoingSearches.forEach((value, key) => {
+//       if (value.socket === socket) {
+//         if (typeof value.cancel === "function") {
+//           value.cancel();
+//         } else {
+//           console.log(
+//             "Cancel function not found or not a function on disconnect"
+//           );
+//         }
+//         ongoingSearches.delete(key);
+//         console.log(`Connection lost and search cancelled for user: ${key}`);
+//       }
+//     });
+//   });
+// });
 
 server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
