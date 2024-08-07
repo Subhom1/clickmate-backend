@@ -137,8 +137,8 @@ app.delete("/deleteUser/:uid/:fuid", async (req, res) => {
   }
 });
 const ongoingSearches = new Map();
-const searchTimeoutDuration = 30000; // 30 seconds
-const checkInterval = 2000; // 1 second
+const searchTimeoutDuration = 10000; // 10 seconds
+const checkInterval = 1000; // 1 second
 
 const runPythonScript = async (text1, text2) => {
   return new Promise((resolve, reject) => {
@@ -186,18 +186,21 @@ const lockUser = async (userId) => {
 const unlockUser = async (userId) => {
   await UserSearch.findOneAndUpdate({ userId }, { isLocked: false });
 };
+
 const matchList = new Map();
 const findMatch = async (userId, query, socket) => {
   console.log("findMatch function called for User ID:", userId);
+  let cancelled = false;
 
+  const cancel = () => {
+    cancelled = true;
+  };
   let attempts = 0;
   const maxAttempts = searchTimeoutDuration / checkInterval;
 
   const checkForMatches = async () => {
-    if (matchList.has(userId)) return;
-
+    if (matchList.has(userId) || cancelled) return;
     attempts++;
-
     try {
       const allOtherQueries = await UserSearch.find({
         isLocked: false,
@@ -212,6 +215,7 @@ const findMatch = async (userId, query, socket) => {
       let highestSimilarity = 0;
 
       for (let q of allOtherQueries) {
+        // Looping through all the queries and running the python script
         const otherUserId = q.userId.toString();
         const isMatchExist = matchList.has(otherUserId);
         if (isMatchExist) continue;
@@ -232,17 +236,18 @@ const findMatch = async (userId, query, socket) => {
           console.error("Error running Python script:", error);
         }
       }
-      console.log("bestMatch:", bestMatch);
       if (
         bestMatch &&
         highestSimilarity >= 0.5 &&
         !matchList.has(bestMatch) &&
-        !matchList.has(userId)
+        !matchList.has(userId) &&
+        !cancelled
       ) {
-        const userLocked = await lockUser(userId);
-        const matchLocked = await lockUser(bestMatch);
+        await lockUser(userId);
+        await lockUser(bestMatch);
         const matchedSocket = ongoingSearches.get(bestMatch)?.socket;
-        if (matchedSocket) {
+        const selfSocket = ongoingSearches.get(userId)?.socket;
+        if (matchedSocket && selfSocket) {
           matchedSocket.emit("search_update", {
             matches: {
               user: await UserDetail.findOne({ _id: userId }),
@@ -251,9 +256,6 @@ const findMatch = async (userId, query, socket) => {
 
             message: "Search result found",
           });
-        }
-        const selfSocket = ongoingSearches.get(userId)?.socket;
-        if (selfSocket) {
           selfSocket.emit("search_update", {
             matches: {
               user: await UserDetail.findOne({ _id: bestMatch }),
@@ -269,20 +271,34 @@ const findMatch = async (userId, query, socket) => {
         await UserSearch.deleteOne({ userId: bestMatch });
         ongoingSearches.delete(userId);
         ongoingSearches.delete(bestMatch);
-
+        if (!matchedSocket && selfSocket && matchList.has(userId)) {
+          matchList.delete(userId);
+          socket.emit("search_update", {
+            matches: null,
+            message: "No result found",
+          });
+          return;
+        }
         console.log(
           `Match found and users ${userId} and ${bestMatch} removed from search`
         );
         return;
       }
 
-      if (attempts < maxAttempts) {
+      if (attempts < maxAttempts && !cancelled) {
         setTimeout(checkForMatches, checkInterval);
       } else {
-        socket.emit("search_update", {
-          matches: [],
-          message: "No result found",
-        });
+        if (cancelled) {
+          socket.emit("search_update", {
+            cancel: true,
+            message: "Search has been cancelled",
+          });
+        } else {
+          socket.emit("search_update", {
+            matches: null,
+            message: "No result found",
+          });
+        }
         await UserSearch.deleteOne({ userId });
         ongoingSearches.delete(userId);
         console.log(
@@ -304,6 +320,7 @@ const findMatch = async (userId, query, socket) => {
   };
 
   checkForMatches();
+  return cancel;
 };
 
 io.on("connection", (socket) => {
@@ -322,8 +339,8 @@ io.on("connection", (socket) => {
         { upsert: true }
       );
 
-      ongoingSearches.set(userId, { socket });
-      await findMatch(userId, query, socket);
+      const cancel = await findMatch(userId, query, socket);
+      ongoingSearches.set(userId, { socket, cancel });
     } catch (error) {
       console.error("Error during search submission:", error);
       socket.emit("error", { message: "An error occurred during the search." });
@@ -332,12 +349,21 @@ io.on("connection", (socket) => {
 
   socket.on("cancel_search", async (data) => {
     const { userId } = data;
+    ongoingSearches.get(userId).cancel();
     await UserSearch.deleteOne({ userId });
     await unlockUser(userId);
     ongoingSearches.delete(userId);
-    socket.emit("search_cancelled", {
-      message: "Search cancelled successfully.",
-    });
+    if (matchList.has(userId)) {
+      //TODO: need rework
+      const partnerId = matchList.get(userId)?.match;
+      matchList.delete(userId);
+      matchList.delete(partnerId);
+      await unlockUser(partnerId);
+      ongoingSearches.get(partnerId).socket.emit("search_update", {
+        matches: null,
+        message: "No partner found",
+      });
+    }
   });
 
   socket.on("disconnect", () => {
