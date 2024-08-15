@@ -3,14 +3,12 @@ import cors from "cors";
 import mongoose from "mongoose";
 import UserDetail from "./models/UserDetailSchema.js";
 import UserSearch from "./models/UserSearchSchema.js";
-import Interest from "./models/InterestSchema.js";
-import admin from "./firebaseAdmin.js";
-import cron from "node-cron";
-import { exec, spawn } from "child_process";
+import { spawn } from "child_process";
 import { Server as socketIo } from "socket.io";
 import http from "http";
-import MatchList from "./models/MatchListSchema.js";
-// import { findMatches, ongoingSearches } from "./findMatch.js";
+import axios from "axios";
+import Chat from "./models/ChatScema.js";
+
 // Initialize Express app
 const app = express();
 const PORT = process.env.PORT || 5051;
@@ -136,7 +134,40 @@ app.delete("/deleteUser/:uid/:fuid", async (req, res) => {
       .send({ message: "Error deleting user", error: error.message });
   }
 });
+// const DAILY_API_KEY =
+//   "3c8cb975ccb3db342cdec030f501796ba80f1e7c49e65c5f983bc5103abcaa6e";
+
+// app.post("/start-call", async (req, res) => {
+//   const { userId1, userId2, socket } = req.body;
+//   console.log(userId1, userId2, socket, "123");
+//   return;
+//   try {
+//     const roomResponse = await axios.post(
+//       "https://api.daily.co/v1/rooms",
+//       { properties: { exp: Math.round(Date.now() / 1000) + 3600 } }, // Room expires in 1 hour
+//       {
+//         headers: {
+//           Authorization: `Bearer ${DAILY_API_KEY}`,
+//           "Content-Type": "application/json",
+//         },
+//       }
+//     );
+
+//     const roomUrl = roomResponse.data.url;
+
+//     // Notify both users with the room URL (using your socket implementation)
+//     socket.to(userId1).emit("call-invite", { roomUrl, matchedUser: userId2 });
+//     socket.to(userId2).emit("call-invite", { roomUrl, matchedUser: userId1 });
+
+//     res.json({ success: true, roomUrl });
+//   } catch (error) {
+//     console.error("Error creating room:", error);
+//     res.status(500).json({ success: false, message: "Failed to create room" });
+//   }
+// });
 const ongoingSearches = new Map();
+const matchList = new Map();
+
 const searchTimeoutDuration = 10000; // 10 seconds
 const checkInterval = 1000; // 1 second
 
@@ -187,7 +218,6 @@ const unlockUser = async (userId) => {
   await UserSearch.findOneAndUpdate({ userId }, { isLocked: false });
 };
 
-const matchList = new Map();
 const findMatch = async (userId, query, socket) => {
   console.log("findMatch function called for User ID:", userId);
   let cancelled = false;
@@ -256,14 +286,14 @@ const findMatch = async (userId, query, socket) => {
 
             message: "Search result found",
           });
-          selfSocket.emit("search_update", {
-            matches: {
-              user: await UserDetail.findOne({ _id: bestMatch }),
-              similarity: highestSimilarity,
-            },
+          // selfSocket.emit("search_update", {
+          //   matches: {
+          //     user: await UserDetail.findOne({ _id: bestMatch }),
+          //     similarity: highestSimilarity,
+          //   },
 
-            message: "Search result found",
-          });
+          //   message: "Search result found",
+          // });
         }
         matchList.set(userId, { match: bestMatch });
         matchList.set(bestMatch, { match: userId });
@@ -322,14 +352,73 @@ const findMatch = async (userId, query, socket) => {
   checkForMatches();
   return cancel;
 };
+app.post("/create-chat", async (req, res) => {
+  try {
+    const { user1Id, user2Id } = req.body;
+    // Validate request
+    if (!user1Id || !user2Id) {
+      return res.status(400).send("User IDs are required");
+    }
+    // Guard clause: Check if a chat thread already exists between the two users
+    const existingChat = await Chat.findOne({
+      participants: { $all: [user1Id, user2Id] },
+    });
+    if (existingChat) {
+      return res.status(200).json(existingChat); // Return the existing chat thread
+    }
+    // Create a new chat thread if no existing thread is found
+    const newChat = new Chat({
+      participants: [user1Id, user2Id],
+      messages: [],
+    });
 
+    await newChat.save();
+
+    res.status(201).json(newChat); // Send back the created chat thread
+  } catch (e) {
+    console.error(e);
+    res.status(500).send("Server Error");
+  }
+});
+app.get("/chat/:user1Id/:user2Id", async (req, res) => {
+  try {
+    const { user1Id, user2Id } = req.params;
+
+    // Find the chat that includes both user1Id and user2Id in participants
+    const chat = await Chat.findOne({
+      participants: { $all: [user1Id, user2Id] },
+    });
+
+    if (!chat) {
+      return res.status(404).json({ msg: "Chat not found" });
+    }
+
+    res.json(chat); // Return the found chat
+  } catch (error) {
+    console.error(error);
+    res.status(500).send("Server Error");
+  }
+});
+
+const saveMessage = async (chatId, message) => {
+  try {
+    const chat = await Chat.findById(chatId);
+    chat.messages.push(message);
+    await chat.save();
+    return chat;
+  } catch (error) {
+    console.error(error.message);
+    throw new Error("Error saving message");
+  }
+};
 io.on("connection", (socket) => {
-  console.log("New WebSocket connection");
-
+  console.log("New WebSocket connection", socket.id);
   socket.on("submit_keyword", async ({ userId, query }) => {
     if (!userId || !query) {
       socket.emit("error", { message: "UserId and query are required." });
       return;
+    } else if (matchList.has(userId)) {
+      matchList.delete(userId);
     }
 
     try {
@@ -346,10 +435,9 @@ io.on("connection", (socket) => {
       socket.emit("error", { message: "An error occurred during the search." });
     }
   });
-
   socket.on("cancel_search", async (data) => {
     const { userId } = data;
-    ongoingSearches.get(userId).cancel();
+    ongoingSearches.get(userId)?.cancel();
     await UserSearch.deleteOne({ userId });
     await unlockUser(userId);
     ongoingSearches.delete(userId);
@@ -359,13 +447,30 @@ io.on("connection", (socket) => {
       matchList.delete(userId);
       matchList.delete(partnerId);
       await unlockUser(partnerId);
-      ongoingSearches.get(partnerId).socket.emit("search_update", {
+      ongoingSearches.get(partnerId)?.socket.emit("search_update", {
         matches: null,
         message: "No partner found",
       });
     }
   });
+  socket.on("joinChat", ({ chatId }) => {
+    console.log(chatId, "joined Chat");
+    socket.join(chatId);
+  });
+  socket.on("sendMessage", async ({ chatId, message }) => {
+    if (!chatId && !message) return;
+    const newMessage = {
+      sender: message.sender,
+      content: message.content,
+    };
 
+    const updatedChat = await saveMessage(chatId, newMessage);
+
+    io.to(chatId).emit(
+      "receiveMessage",
+      updatedChat.messages[updatedChat.messages.length - 1]
+    );
+  });
   socket.on("disconnect", () => {
     console.log("Socket disconnected");
   });
