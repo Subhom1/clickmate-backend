@@ -8,6 +8,7 @@ import { Server as socketIo } from "socket.io";
 import http from "http";
 import axios from "axios";
 import Chat from "./models/ChatScema.js";
+import Interest from "./models/InterestSchema.js";
 
 // Initialize Express app
 const app = express();
@@ -30,15 +31,6 @@ mongoose
   .then(() => console.log("Connected to MongoDB"))
   .catch((err) => console.error("Error connecting to MongoDB:", err));
 
-//To fetch all the users
-app.get("/users", async (req, res) => {
-  try {
-    const users = await UserDetail.find();
-    res.json(users);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-});
 // To register a user
 app.post("/register", async (req, res) => {
   const { name, email } = req.body;
@@ -57,59 +49,87 @@ app.post("/register", async (req, res) => {
     res.status(500).send({ status: "error", data: err.res });
   }
 });
-// Endpoint to add interests to an existing user
-app.post("/user/:id/interests", async (req, res) => {
-  const { id } = req.params;
-  const { interest } = req.body; // Expecting an array of objects with id "interest": [{ "id": "669d98bae0b0218423887373" }]
-  // Validate request
-  if (
-    !Array.isArray(interest) ||
-    interest.length === 0 ||
-    !interest.every((i) => i.id)
-  ) {
-    return res
-      .status(400)
-      .send({ status: "error", message: "Invalid interest format" });
-  }
-  try {
-    // Extract the IDs from the request payload
-    const interestIds = interest.map((item) => item.id);
 
-    // Update user with new interests
-    const updatedUser = await UserDetail.findByIdAndUpdate(
-      id,
-      { $addToSet: { interest: { $each: interestIds } } },
-      { new: true }
-    );
-
-    if (!updatedUser) {
-      return res
-        .status(404)
-        .send({ status: "error", message: "User not found" });
-    }
-
-    res.status(200).send({ status: "ok", data: updatedUser });
-  } catch (err) {
-    console.error("Internal server error:", err);
-    res.status(500).send({ status: "error", message: err.message });
-  }
-});
-
-// Fetch user's details by useremail
+// User Operations
+// Fetch user's details by email
 app.get("/user/:email", async (req, res) => {
   const { email } = req.params;
   try {
-    const user = await UserDetail.findOne({ email });
+    const user = await UserDetail.findOne({ email }).populate("interests");
+
     if (!user) {
-      return res
-        .status(404)
-        .send({ status: "error", message: "User not found" });
+      return res.status(404).json({ message: "User not found" });
     }
-    res.status(200).send({ status: "ok", data: user });
-  } catch (err) {
-    res.status(500).send({ status: "error", data: err.message });
+
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 });
+
+//To fetch all the friends of a user
+app.get("/users/:userId/friends", async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // Find the user by ID and populate the friends field
+    const user = await UserDetail.findById(userId).populate(
+      "friends",
+      "fullname email bio interests"
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Return the list of friends
+    res.json(user.friends);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+//To update the user's details
+app.patch("/user/:userId", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const updateFields = {};
+
+    // Dynamically add fields to the update object if they are present in the request body
+    if (req.body.fullname) {
+      updateFields.fullname = req.body.fullname;
+    }
+    if (req.body.bio) {
+      updateFields.bio = req.body.bio;
+    }
+    if (req.body.interests) {
+      updateFields.interests = req.body.interests;
+    }
+
+    // Always update the timestamp
+    updateFields.updated_at = new Date();
+
+    // Check if there are any fields to update
+    if (Object.keys(updateFields).length === 0) {
+      return res.status(400).json({ message: "No fields provided for update" });
+    }
+
+    // Find the user by ID and update the specified fields
+    const updatedUser = await UserDetail.findByIdAndUpdate(
+      userId,
+      updateFields,
+      { new: true, runValidators: true } // Return the updated document and validate input
+    );
+
+    if (!updatedUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.status(200).json(updatedUser);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 //Delete user
 app.delete("/deleteUser/:uid/:fuid", async (req, res) => {
   const { uid, fuid } = req.params;
@@ -132,6 +152,15 @@ app.delete("/deleteUser/:uid/:fuid", async (req, res) => {
     res
       .status(500)
       .send({ message: "Error deleting user", error: error.message });
+  }
+});
+//Get all interests
+app.get("/interests", async (req, res) => {
+  try {
+    const interests = await Interest.find();
+    res.status(200).json(interests);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 });
 // const DAILY_API_KEY =
@@ -457,6 +486,10 @@ io.on("connection", (socket) => {
     console.log(chatId, "joined Chat");
     socket.join(chatId);
   });
+  socket.on("leaveChat", ({ chatId }) => {
+    console.log(chatId, "left Chat");
+    socket.leave(chatId);
+  });
   socket.on("sendMessage", async ({ chatId, message }) => {
     if (!chatId && !message) return;
     const newMessage = {
@@ -479,28 +512,62 @@ io.on("connection", (socket) => {
 server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
-// const Interest = mongoose.model("interest");
+
 // Endpoint to add interests //ONLY AS A ADMIN IF I WANT TO ADD ANY NEW INTEREST TO THE DB
-// app.post("/interests", async (req, res) => {
-//   console.log(req.body);
-//   const { interest } = req.body;
-//   try {
-//     const existingInterestDoc = await Interest.findOne();
-//     if (!existingInterestDoc) {
-//       await Interest.create({ interest });
-//       return res
-//         .status(201)
-//         .send({ status: "ok", data: "Interests added successfully" });
-//     }
-//     const updatedInterests = Array.from(
-//       new Set([...existingInterestDoc.interest, ...interest])
-//     );
-//     existingInterestDoc.interest = updatedInterests;
-//     await existingInterestDoc.save();
-//     res
-//       .status(201)
-//       .send({ status: "ok", data: "Interests updated successfully" });
-//   } catch (err) {
-//     res.status(500).send({ status: "error", data: err.message });
-//   }
-// });
+app.post("/add-interest", async (req, res) => {
+  const { interest } = req.body; // Extract the interest array from the request body
+
+  if (!Array.isArray(interest) || interest.length === 0) {
+    return res
+      .status(400)
+      .json({ message: "Interest array is required and must be non-empty" });
+  }
+
+  // Ensure all items in the array have the required 'text' field
+  const missingTextFields = interest.filter((item) => !item.text);
+  if (missingTextFields.length > 0) {
+    return res
+      .status(400)
+      .json({ message: "Each interest object must contain a 'text' field" });
+  }
+
+  // Extract the texts for easy processing
+  const interestTexts = interest.map((item) => item.text);
+
+  try {
+    // Find existing interests
+    const existingInterests = await Interest.find({
+      text: { $in: interestTexts },
+    }).lean();
+    const existingTexts = new Set(existingInterests.map((item) => item.text));
+
+    // Determine new interests to insert
+    const newInterests = interest.filter(
+      (item) => !existingTexts.has(item.text)
+    );
+
+    // Insert new interests
+    if (newInterests.length > 0) {
+      const result = await Interest.insertMany(newInterests, {
+        ordered: false,
+      });
+      res.status(201).json({
+        message: `${result.length} new interests added`,
+        added: result,
+      });
+    } else {
+      res.status(200).json({ message: "No new interests to add" });
+    }
+  } catch (error) {
+    // Log the full error for debugging
+    console.error("Error inserting interests:", error);
+
+    // Handle errors, such as validation errors
+    if (error.code === 11000) {
+      // Duplicate key error code
+      res.status(409).json({ message: "One or more interests already exist" });
+    } else {
+      res.status(500).json({ message: error.message });
+    }
+  }
+});
