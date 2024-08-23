@@ -55,7 +55,10 @@ app.post("/register", async (req, res) => {
 app.get("/user/:email", async (req, res) => {
   const { email } = req.params;
   try {
-    const user = await UserDetail.findOne({ email }).populate("interests");
+    const user = await UserDetail.findOne({ email })
+      .populate("interests")
+      .populate("friends");
+
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
@@ -93,14 +96,16 @@ app.patch("/user/:userId", async (req, res) => {
   try {
     const userId = req.params.userId;
     const updateFields = {};
-
     // Dynamically add fields to the update object if they are present in the request body
     if (req.body.fullname) {
       updateFields.fullname = req.body.fullname;
     }
-    if (req.body.bio) {
-      updateFields.bio = req.body.bio;
+
+    // Update the bio field even if it's an empty string
+    if (req.body.bio !== undefined) {
+      updateFields.bio = req.body.bio == "" ? "No Bio" : req.body.bio;
     }
+
     if (req.body.interests) {
       updateFields.interests = req.body.interests;
     }
@@ -118,7 +123,7 @@ app.patch("/user/:userId", async (req, res) => {
       userId,
       updateFields,
       { new: true, runValidators: true } // Return the updated document and validate input
-    );
+    ).populate("interests").populate('friends');
 
     if (!updatedUser) {
       return res.status(404).json({ message: "User not found" });
@@ -197,7 +202,7 @@ app.get("/interests", async (req, res) => {
 const ongoingSearches = new Map();
 const matchList = new Map();
 
-const searchTimeoutDuration = 10000; // 10 seconds
+const searchTimeoutDuration = 30000; // 30 seconds
 const checkInterval = 1000; // 1 second
 
 const runPythonScript = async (text1, text2) => {
@@ -306,7 +311,7 @@ const findMatch = async (userId, query, socket) => {
         await lockUser(bestMatch);
         const matchedSocket = ongoingSearches.get(bestMatch)?.socket;
         const selfSocket = ongoingSearches.get(userId)?.socket;
-        if (matchedSocket && selfSocket) {
+        // if (matchedSocket && selfSocket) {
           matchedSocket.emit("search_update", {
             matches: {
               user: await UserDetail.findOne({ _id: userId }),
@@ -315,15 +320,15 @@ const findMatch = async (userId, query, socket) => {
 
             message: "Search result found",
           });
-          // selfSocket.emit("search_update", {
-          //   matches: {
-          //     user: await UserDetail.findOne({ _id: bestMatch }),
-          //     similarity: highestSimilarity,
-          //   },
+          selfSocket.emit("search_update", {
+            matches: {
+              user: await UserDetail.findOne({ _id: bestMatch }),
+              similarity: highestSimilarity,
+            },
 
-          //   message: "Search result found",
-          // });
-        }
+            message: "Search result found",
+          });
+        // }
         matchList.set(userId, { match: bestMatch });
         matchList.set(bestMatch, { match: userId });
         await UserSearch.deleteOne({ userId });
@@ -400,6 +405,18 @@ app.post("/create-chat", async (req, res) => {
       participants: [user1Id, user2Id],
       messages: [],
     });
+    // Update the friend list of both users
+    await UserDetail.findByIdAndUpdate(
+      user1Id,
+      { $addToSet: { friends: user2Id } }, // Add user2Id to user1's friends array if it doesn't already exist
+      { new: true, runValidators: true } // Return the updated document and validate input
+    );
+
+    await UserDetail.findByIdAndUpdate(
+      user2Id,
+      { $addToSet: { friends: user1Id } }, // Add user1Id to user2's friends array if it doesn't already exist
+      { new: true, runValidators: true } // Return the updated document and validate input
+    );
 
     await newChat.save();
 
@@ -483,11 +500,9 @@ io.on("connection", (socket) => {
     }
   });
   socket.on("joinChat", ({ chatId }) => {
-    console.log(chatId, "joined Chat");
     socket.join(chatId);
   });
   socket.on("leaveChat", ({ chatId }) => {
-    console.log(chatId, "left Chat");
     socket.leave(chatId);
   });
   socket.on("sendMessage", async ({ chatId, message }) => {
