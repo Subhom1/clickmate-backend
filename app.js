@@ -49,7 +49,7 @@ app.post("/register", async (req, res) => {
     res.status(500).send({ status: "error", data: err.res });
   }
 });
-
+//===============
 // User Operations
 // Fetch user's details by email
 app.get("/user/:email", async (req, res) => {
@@ -58,7 +58,6 @@ app.get("/user/:email", async (req, res) => {
     const user = await UserDetail.findOne({ email })
       .populate("interests")
       .populate("friends");
-
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
@@ -69,7 +68,6 @@ app.get("/user/:email", async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 });
-
 //To fetch all the friends of a user
 app.get("/users/:userId/friends", async (req, res) => {
   try {
@@ -123,7 +121,9 @@ app.patch("/user/:userId", async (req, res) => {
       userId,
       updateFields,
       { new: true, runValidators: true } // Return the updated document and validate input
-    ).populate("interests").populate('friends');
+    )
+      .populate("interests")
+      .populate("friends");
 
     if (!updatedUser) {
       return res.status(404).json({ message: "User not found" });
@@ -134,7 +134,6 @@ app.patch("/user/:userId", async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 });
-
 //Delete user
 app.delete("/deleteUser/:uid/:fuid", async (req, res) => {
   const { uid, fuid } = req.params;
@@ -168,37 +167,7 @@ app.get("/interests", async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 });
-// const DAILY_API_KEY =
-//   "3c8cb975ccb3db342cdec030f501796ba80f1e7c49e65c5f983bc5103abcaa6e";
 
-// app.post("/start-call", async (req, res) => {
-//   const { userId1, userId2, socket } = req.body;
-//   console.log(userId1, userId2, socket, "123");
-//   return;
-//   try {
-//     const roomResponse = await axios.post(
-//       "https://api.daily.co/v1/rooms",
-//       { properties: { exp: Math.round(Date.now() / 1000) + 3600 } }, // Room expires in 1 hour
-//       {
-//         headers: {
-//           Authorization: `Bearer ${DAILY_API_KEY}`,
-//           "Content-Type": "application/json",
-//         },
-//       }
-//     );
-
-//     const roomUrl = roomResponse.data.url;
-
-//     // Notify both users with the room URL (using your socket implementation)
-//     socket.to(userId1).emit("call-invite", { roomUrl, matchedUser: userId2 });
-//     socket.to(userId2).emit("call-invite", { roomUrl, matchedUser: userId1 });
-
-//     res.json({ success: true, roomUrl });
-//   } catch (error) {
-//     console.error("Error creating room:", error);
-//     res.status(500).json({ success: false, message: "Failed to create room" });
-//   }
-// });
 const ongoingSearches = new Map();
 const matchList = new Map();
 
@@ -311,8 +280,8 @@ const findMatch = async (userId, query, socket) => {
         await lockUser(bestMatch);
         const matchedSocket = ongoingSearches.get(bestMatch)?.socket;
         const selfSocket = ongoingSearches.get(userId)?.socket;
-        // if (matchedSocket && selfSocket) {
-          matchedSocket.emit("search_update", {
+        if (selfSocket) {
+          matchedSocket?.emit("search_update", {
             matches: {
               user: await UserDetail.findOne({ _id: userId }),
               similarity: highestSimilarity,
@@ -320,7 +289,9 @@ const findMatch = async (userId, query, socket) => {
 
             message: "Search result found",
           });
-          selfSocket.emit("search_update", {
+        }
+        if (matchedSocket) {
+          selfSocket?.emit("search_update", {
             matches: {
               user: await UserDetail.findOne({ _id: bestMatch }),
               similarity: highestSimilarity,
@@ -328,7 +299,7 @@ const findMatch = async (userId, query, socket) => {
 
             message: "Search result found",
           });
-        // }
+        }
         matchList.set(userId, { match: bestMatch });
         matchList.set(bestMatch, { match: userId });
         await UserSearch.deleteOne({ userId });
@@ -448,15 +419,50 @@ app.get("/chat/:user1Id/:user2Id", async (req, res) => {
 
 const saveMessage = async (chatId, message) => {
   try {
-    const chat = await Chat.findById(chatId);
-    chat.messages.push(message);
-    await chat.save();
-    return chat;
+    const updatedChat = await Chat.findByIdAndUpdate(
+      chatId,
+      { $push: { messages: message } }, // Add the new message to the messages array
+      { new: true } // Return the updated document
+    );
+    return updatedChat;
   } catch (error) {
     console.error(error.message);
     throw new Error("Error saving message");
   }
 };
+// Fetch un-read message of users
+app.get("/unread-messages/:userId", async (req, res) => {
+  const { userId } = req.params;
+  try {
+    // Find all chats where the current user is a participant
+    const chats = await Chat.find({ participants: userId });
+
+    // Map through each chat to calculate unread messages count and the other user's ID
+    const unreadMessagesCount = chats.map((chat) => {
+      // Identify the other participant's user ID
+      const otherUserId = chat.participants.find(
+        (id) => id.toString() !== userId
+      );
+
+      // Count the number of messages that have not been read by the current user
+      const count = chat.messages.filter(
+        (message) => !message.readBy.includes(userId)
+      ).length;
+
+      return {
+        userId: otherUserId,
+        count,
+      };
+    });
+
+    res.json(unreadMessagesCount);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send("Server error");
+  }
+});
+
+//=========== All socket operations
 io.on("connection", (socket) => {
   console.log("New WebSocket connection", socket.id);
   socket.on("submit_keyword", async ({ userId, query }) => {
@@ -505,11 +511,13 @@ io.on("connection", (socket) => {
   socket.on("leaveChat", ({ chatId }) => {
     socket.leave(chatId);
   });
+  // When a message is sent
   socket.on("sendMessage", async ({ chatId, message }) => {
     if (!chatId && !message) return;
     const newMessage = {
       sender: message.sender,
       content: message.content,
+      readBy: [message.sender],
     };
 
     const updatedChat = await saveMessage(chatId, newMessage);
@@ -518,6 +526,35 @@ io.on("connection", (socket) => {
       "receiveMessage",
       updatedChat.messages[updatedChat.messages.length - 1]
     );
+    // Emit event to update unread counts
+    io.emit("updateUnreadCounts");
+  });
+  // When marking messages as read
+  socket.on("markAsRead", async ({ chatId, userId }) => {
+    try {
+      await Chat.updateMany(
+        { _id: chatId },
+        { $addToSet: { "messages.$[].readBy": userId } }
+      );
+    } catch (error) {
+      console.error(error);
+    }
+    // Emit event to update unread counts after marking as read
+    io.emit("updateUnreadCounts");
+  });
+  // Clear all messages by chatId
+  socket.on("clearMessages", async ({ chatId }) => {
+    try {
+      await Chat.updateOne(
+        { _id: chatId }, // Match the chat by chatId
+        { $set: { messages: [] } } // Set the messages array to an empty array
+      );
+    } catch (error) {
+      console.error(error);
+    }
+
+    // Optionally, emit an event to notify the client that the messages have been cleared
+    io.emit("messagesCleared");
   });
   socket.on("disconnect", () => {
     console.log("Socket disconnected");
@@ -529,60 +566,93 @@ server.listen(PORT, () => {
 });
 
 // Endpoint to add interests //ONLY AS A ADMIN IF I WANT TO ADD ANY NEW INTEREST TO THE DB
-app.post("/add-interest", async (req, res) => {
-  const { interest } = req.body; // Extract the interest array from the request body
+// app.post("/add-interest", async (req, res) => {
+//   const { interest } = req.body; // Extract the interest array from the request body
 
-  if (!Array.isArray(interest) || interest.length === 0) {
-    return res
-      .status(400)
-      .json({ message: "Interest array is required and must be non-empty" });
-  }
+//   if (!Array.isArray(interest) || interest.length === 0) {
+//     return res
+//       .status(400)
+//       .json({ message: "Interest array is required and must be non-empty" });
+//   }
 
-  // Ensure all items in the array have the required 'text' field
-  const missingTextFields = interest.filter((item) => !item.text);
-  if (missingTextFields.length > 0) {
-    return res
-      .status(400)
-      .json({ message: "Each interest object must contain a 'text' field" });
-  }
+//   // Ensure all items in the array have the required 'text' field
+//   const missingTextFields = interest.filter((item) => !item.text);
+//   if (missingTextFields.length > 0) {
+//     return res
+//       .status(400)
+//       .json({ message: "Each interest object must contain a 'text' field" });
+//   }
 
-  // Extract the texts for easy processing
-  const interestTexts = interest.map((item) => item.text);
+//   // Extract the texts for easy processing
+//   const interestTexts = interest.map((item) => item.text);
 
-  try {
-    // Find existing interests
-    const existingInterests = await Interest.find({
-      text: { $in: interestTexts },
-    }).lean();
-    const existingTexts = new Set(existingInterests.map((item) => item.text));
+//   try {
+//     // Find existing interests
+//     const existingInterests = await Interest.find({
+//       text: { $in: interestTexts },
+//     }).lean();
+//     const existingTexts = new Set(existingInterests.map((item) => item.text));
 
-    // Determine new interests to insert
-    const newInterests = interest.filter(
-      (item) => !existingTexts.has(item.text)
-    );
+//     // Determine new interests to insert
+//     const newInterests = interest.filter(
+//       (item) => !existingTexts.has(item.text)
+//     );
 
-    // Insert new interests
-    if (newInterests.length > 0) {
-      const result = await Interest.insertMany(newInterests, {
-        ordered: false,
-      });
-      res.status(201).json({
-        message: `${result.length} new interests added`,
-        added: result,
-      });
-    } else {
-      res.status(200).json({ message: "No new interests to add" });
-    }
-  } catch (error) {
-    // Log the full error for debugging
-    console.error("Error inserting interests:", error);
+//     // Insert new interests
+//     if (newInterests.length > 0) {
+//       const result = await Interest.insertMany(newInterests, {
+//         ordered: false,
+//       });
+//       res.status(201).json({
+//         message: `${result.length} new interests added`,
+//         added: result,
+//       });
+//     } else {
+//       res.status(200).json({ message: "No new interests to add" });
+//     }
+//   } catch (error) {
+//     // Log the full error for debugging
+//     console.error("Error inserting interests:", error);
 
-    // Handle errors, such as validation errors
-    if (error.code === 11000) {
-      // Duplicate key error code
-      res.status(409).json({ message: "One or more interests already exist" });
-    } else {
-      res.status(500).json({ message: error.message });
-    }
-  }
-});
+//     // Handle errors, such as validation errors
+//     if (error.code === 11000) {
+//       // Duplicate key error code
+//       res.status(409).json({ message: "One or more interests already exist" });
+//     } else {
+//       res.status(500).json({ message: error.message });
+//     }
+//   }
+// });
+
+//===============
+// const DAILY_API_KEY =
+//   "3c8cb975ccb3db342cdec030f501796ba80f1e7c49e65c5f983bc5103abcaa6e";
+
+// app.post("/start-call", async (req, res) => {
+//   const { userId1, userId2, socket } = req.body;
+//   console.log(userId1, userId2, socket, "123");
+//   return;
+//   try {
+//     const roomResponse = await axios.post(
+//       "https://api.daily.co/v1/rooms",
+//       { properties: { exp: Math.round(Date.now() / 1000) + 3600 } }, // Room expires in 1 hour
+//       {
+//         headers: {
+//           Authorization: `Bearer ${DAILY_API_KEY}`,
+//           "Content-Type": "application/json",
+//         },
+//       }
+//     );
+
+//     const roomUrl = roomResponse.data.url;
+
+//     // Notify both users with the room URL (using your socket implementation)
+//     socket.to(userId1).emit("call-invite", { roomUrl, matchedUser: userId2 });
+//     socket.to(userId2).emit("call-invite", { roomUrl, matchedUser: userId1 });
+
+//     res.json({ success: true, roomUrl });
+//   } catch (error) {
+//     console.error("Error creating room:", error);
+//     res.status(500).json({ success: false, message: "Failed to create room" });
+//   }
+// });
