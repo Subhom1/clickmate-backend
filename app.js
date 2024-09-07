@@ -6,7 +6,6 @@ import UserSearch from "./models/UserSearchSchema.js";
 import { spawn } from "child_process";
 import { Server as socketIo } from "socket.io";
 import http from "http";
-import axios from "axios";
 import Chat from "./models/ChatScema.js";
 import Interest from "./models/InterestSchema.js";
 
@@ -135,13 +134,12 @@ app.patch("/user/:userId", async (req, res) => {
   }
 });
 //Delete user
-app.delete("/deleteUser/:uid/:fuid", async (req, res) => {
-  const { uid, fuid } = req.params;
+app.delete("/deleteUser/:uid/", async (req, res) => {
+  const { uid } = req.params;
 
   try {
     // Delete user from MongoDB using Mongoose
     const result = await UserDetail.deleteOne({ _id: uid });
-    // await admin.auth().deleteUser(fuid);
 
     if (result.deletedCount === 1) {
       // Delete user from Firebase Auth
