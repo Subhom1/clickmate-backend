@@ -3,11 +3,14 @@ import cors from "cors";
 import mongoose from "mongoose";
 import UserDetail from "./models/UserDetailSchema.js";
 import UserSearch from "./models/UserSearchSchema.js";
+import Explore from "./models/ExploreSchema.js";
 import { spawn } from "child_process";
 import { Server as socketIo } from "socket.io";
 import http from "http";
 import Chat from "./models/ChatScema.js";
 import Interest from "./models/InterestSchema.js";
+import multer from "multer";
+import path from "path";
 
 // Initialize Express app
 const app = express();
@@ -15,6 +18,7 @@ const PORT = process.env.PORT || 5051;
 
 // Middleware
 app.use(express.json());
+app.use(express.static("./public")); // To serve images statically
 app.use(cors());
 
 // Create HTTP server
@@ -457,6 +461,95 @@ app.get("/unread-messages/:userId", async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).send("Server error");
+  }
+});
+
+// Initialize upload variable
+const upload = multer({
+  // Set storage engine using Multer
+  storage: multer.diskStorage({
+    destination: "./public/uploads/",
+    filename: function (req, file, cb) {
+      cb(
+        null,
+        file.fieldname + "-" + Date.now() + path.extname(file.originalname)
+      );
+    },
+  }),
+  limits: { fileSize: 5000000 }, // 5MB file size limit
+  fileFilter: function (req, file, cb) {
+    checkFileType(file, cb);
+  },
+}).array("images", 10); // 'image' is the name of our file input field  // Accept up to 10 images
+
+// Check File Type
+function checkFileType(file, cb) {
+  // Allowed ext
+  const filetypes = /jpeg|jpg|png|gif/;
+  // Check ext
+  const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
+  // Check mime
+  const mimetype = filetypes.test(file.mimetype);
+
+  if (mimetype && extname) {
+    return cb(null, true);
+  } else {
+    cb("Error: Images Only!");
+  }
+}
+// Route to add items to an existing list in a document
+app.post("/add-items/:categoryId", upload, async (req, res) => {
+  console.log(req.body, "body");
+  const { categoryId } = req.params;
+  const files = req.files;
+  const items = req.body.items;
+
+  if (!items) {
+    return res.status(400).send({ message: "No items provided." });
+  }
+
+  try {
+    const itemData = JSON.parse(items).map((item, index) => ({
+      text: item.text,
+      imgUrl: files[index] ? `/uploads/${files[index].filename}` : null,
+    }));
+
+    const updatedExplore = await Explore.findByIdAndUpdate(
+      categoryId,
+      { $push: { list: { $each: itemData } } },
+      { new: true, safe: true, upsert: true }
+    );
+
+    res.status(200).json(updatedExplore);
+  } catch (error) {
+    console.error("Error adding items:", error);
+    res.status(500).send({ message: "Failed to add items", error: error });
+  }
+});
+// POST route to create a new category
+app.post("/add-explore-category", (req, res) => {
+    const { category } = req.body;
+
+    if (!category) {
+        return res.status(400).json({ message: "Category is required." });
+    }
+
+    const newExplore = new Explore({
+        category,
+        list: [] // Initialize with an empty list or omit if your schema allows
+    });
+
+    newExplore.save()
+        .then(explore => res.status(201).json(explore))
+        .catch(err => res.status(500).json({ message: "Error saving the category", error: err }));
+});
+//Get all interests
+app.get("/explore", async (req, res) => {
+  try {
+    const explore = await Explore.find();
+    res.status(200).json(explore);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 });
 
