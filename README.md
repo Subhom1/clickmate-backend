@@ -30,4 +30,3 @@ once the installations are done, from the project folder inside open in terminal
 ```bash
 npm start
 ```
-```
