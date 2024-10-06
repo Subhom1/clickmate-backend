@@ -11,7 +11,7 @@ import Chat from "./models/ChatScema.js";
 import Interest from "./models/InterestSchema.js";
 import multer from "multer";
 import path from "path";
-
+import { uri } from "./Secret.js";
 // Initialize Express app
 const app = express();
 const PORT = process.env.PORT || 5051;
@@ -27,7 +27,6 @@ const server = http.createServer(app);
 // Attach WebSocket server to the HTTP server
 const io = new socketIo(server);
 
-const uri = `mongodb+srv://subhomkundu:5uOIiGCbYu6xUg1b@cluster0.k8g0qnb.mongodb.net/clickmate?retryWrites=true&w=majority&appName=Cluster0`;
 
 mongoose
   .connect(uri)
