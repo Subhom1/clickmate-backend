@@ -4,7 +4,8 @@ import mongoose from "mongoose";
 import UserDetail from "./models/UserDetailSchema.js";
 import UserSearch from "./models/UserSearchSchema.js";
 import Explore from "./models/ExploreSchema.js";
-import { spawn } from "child_process";
+import { spawn } from "child_process"; // kept for legacy calculate_similarity.py — no longer used for matching
+import axios from "axios";
 import { Server as socketIo } from "socket.io";
 import http from "http";
 import Chat from "./models/ChatScema.js";
@@ -12,9 +13,18 @@ import Interest from "./models/InterestSchema.js";
 import multer from "multer";
 import path from "path";
 import { uri } from "./Secret.js";
+import {
+  getContextEmbedding,
+  cosineSimilarity,
+} from "./scripts/ChatGPTContext.js";
+import "dotenv/config";
+
 // Initialize Express app
 const app = express();
 const PORT = process.env.PORT || 5051;
+// Configurable matching thresholds — override via environment variables
+const SIMILARITY_THRESHOLD = parseFloat(process.env.SIMILARITY_THRESHOLD ?? "0.5");
+const PYTHON_TIMEOUT_MS = parseInt(process.env.PYTHON_TIMEOUT_MS ?? "5000");
 
 // Middleware
 app.use(express.json());
@@ -27,10 +37,14 @@ const server = http.createServer(app);
 // Attach WebSocket server to the HTTP server
 const io = new socketIo(server);
 
-
 mongoose
   .connect(uri)
-  .then(() => console.log("Connected to MongoDB"))
+  .then(async () => {
+    console.log("Connected to MongoDB");
+    // Clear any locks left over from a previous crashed or restarted session
+    const cleared = await UserSearch.updateMany({}, { isLocked: false });
+    console.log(`Cleared ${cleared.modifiedCount} stale search lock(s) on startup`);
+  })
   .catch((err) => console.error("Error connecting to MongoDB:", err));
 
 // To register a user
@@ -172,42 +186,38 @@ app.get("/interests", async (req, res) => {
 const ongoingSearches = new Map();
 const matchList = new Map();
 
-const searchTimeoutDuration = 30000; // 30 seconds
-const checkInterval = 1000; // 1 second
+const searchTimeoutDuration = 30000; // 30 seconds absolute deadline
 
-const runPythonScript = async (text1, text2) => {
-  return new Promise((resolve, reject) => {
-    const process = spawn("python3", [
-      "scripts/calculate_similarity.py",
-      text1,
-      text2,
-    ]);
+// Issue 11: event bus — new searchers wake all existing workers immediately
+import { EventEmitter } from "events";
+const matchingBus = new EventEmitter();
+matchingBus.setMaxListeners(500); // allow many concurrent searchers
 
-    let result = "";
-    let error = "";
+// Issue 9: HTTP call to the persistent FastAPI similarity microservice.
+// The service loads the transformer model once on startup, eliminating the
+// per-comparison cold-start cost of spawning a new python3 process each time.
+const SIMILARITY_SERVICE_URL =
+  process.env.SIMILARITY_SERVICE_URL ?? "http://127.0.0.1:8001/similarity";
 
-    process.stdout.on("data", (data) => {
-      result += data.toString();
-    });
-
-    process.stderr.on("data", (data) => {
-      error += data.toString();
-    });
-
-    process.on("close", (code) => {
-      if (code === 0) {
-        try {
-          const jsonResult = JSON.parse(result);
-          resolve(jsonResult);
-        } catch (parseError) {
-          reject(`Invalid JSON output: ${result}`);
-        }
-      } else {
-        reject(`Error: ${error}`);
-      }
-    });
-  });
+const runSimilarityService = async (text1, text2) => {
+  const response = await axios.post(SIMILARITY_SERVICE_URL, { text1, text2 });
+  return response.data; // { similarity_score: number }
 };
+
+const runChatGPTSimilarity = async (text1, text2) => {
+  const emb1 = await getContextEmbedding(text1);
+  const emb2 = await getContextEmbedding(text2);
+  return cosineSimilarity(emb1, emb2);
+};
+
+// Wraps a promise with a hard timeout so a hung subprocess never stalls a poll cycle
+const withTimeout = (promise, ms) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Operation timed out after ${ms}ms`)), ms)
+    ),
+  ]);
 
 const lockUser = async (userId) => {
   const user = await UserSearch.findOneAndUpdate(
@@ -222,140 +232,222 @@ const unlockUser = async (userId) => {
   await UserSearch.findOneAndUpdate({ userId }, { isLocked: false });
 };
 
+// Issue 14: Jaccard overlap coefficient — returns 0.0–1.0 representing the
+// fraction of shared interests between two users' interest ID sets.
+const computeInterestOverlap = (interests1, interests2) => {
+  if (!interests1?.length || !interests2?.length) return 0;
+  const set1 = new Set(interests1.map((id) => id.toString()));
+  const set2 = new Set(interests2.map((id) => id.toString()));
+  const intersection = [...set1].filter((id) => set2.has(id)).length;
+  const union = new Set([...set1, ...set2]).size;
+  return union === 0 ? 0 : intersection / union;
+};
+
+// Weighting for blended score: query semantic similarity vs interest overlap
+const QUERY_WEIGHT = parseFloat(process.env.QUERY_WEIGHT ?? "0.7");
+const INTEREST_WEIGHT = parseFloat(process.env.INTEREST_WEIGHT ?? "0.3");
+
 const findMatch = async (userId, query, socket) => {
-  console.log("findMatch function called for User ID:", userId);
+  console.log("findMatch started for User ID:", userId);
   let cancelled = false;
+  let timeoutHandle = null;
 
   const cancel = () => {
     cancelled = true;
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+    matchingBus.off("new_searcher", onNewSearcher);
   };
-  let attempts = 0;
-  const maxAttempts = searchTimeoutDuration / checkInterval;
 
+  // Issue 11: core matching pass — runs immediately and again on every new searcher event
   const checkForMatches = async () => {
     if (matchList.has(userId) || cancelled) return;
-    attempts++;
     try {
+      // Exclude already-friends from the candidate pool (Issue 13)
+      const currentUser = await UserDetail.findById(userId).select("friends interests").lean();
+      const friendIds = currentUser?.friends?.map((id) => id.toString()) ?? [];
+
       const allOtherQueries = await UserSearch.find({
         isLocked: false,
-        userId: { $ne: userId },
-      }).lean(); // Used lean() to improve performance by returning plain JavaScript objects
+        userId: { $ne: userId, $nin: friendIds },
+      })
+        .sort({ created_at: 1 }) // Oldest waiting first — fair ordering for tied scores (Issue 15)
+        .lean();
 
-      console.log(
-        `Attempt ${attempts}: Found ${allOtherQueries.length} other queries`
+      console.log(`[${userId}] Found ${allOtherQueries.length} candidate(s)`);
+      if (allOtherQueries.length === 0) return;
+
+      // Fetch the searching user's interests once for this pass (Issue 14)
+      const selfInterests = currentUser?.interests ?? [];
+
+      // Issue 10: score all candidates in parallel rather than sequentially
+      const scoredCandidates = await Promise.all(
+        allOtherQueries
+          .filter((q) => !matchList.has(q.userId.toString()))
+          .map(async (q) => {
+            const otherUserId = q.userId.toString();
+            try {
+              // Fetch candidate profile for interest data
+              const candidateProfile = await UserDetail.findById(otherUserId)
+                .select("interests")
+                .lean();
+
+              const [similarityResult] = await Promise.all([
+                withTimeout(runSimilarityService(q.query, query), PYTHON_TIMEOUT_MS),
+              ]);
+
+              const querySimilarity = similarityResult.similarity_score;
+              const candidateInterests = candidateProfile?.interests ?? [];
+
+              let blendedScore;
+              let interestOverlap = 0;
+
+              if (selfInterests.length === 0 || candidateInterests.length === 0) {
+                // If either user has no interests registered, default to 100% query similarity
+                blendedScore = querySimilarity;
+                interestOverlap = 0;
+              } else {
+                interestOverlap = computeInterestOverlap(selfInterests, candidateInterests);
+                blendedScore = QUERY_WEIGHT * querySimilarity + INTEREST_WEIGHT * interestOverlap;
+              }
+
+              console.log(
+                `[${userId}] vs [${otherUserId}]: query=${querySimilarity.toFixed(3)}, ` +
+                `interests=${interestOverlap.toFixed(3)} (fallback=${(selfInterests.length === 0 || candidateInterests.length === 0)}), blended=${blendedScore.toFixed(3)}`
+              );
+
+              return { userId: otherUserId, score: blendedScore };
+            } catch (err) {
+              console.error(`Similarity check failed for candidate ${otherUserId}:`, err.message);
+              return null;
+            }
+          })
       );
 
-      let bestMatch = null;
-      let highestSimilarity = 0;
+      // Filter nulls and below-threshold, then pick the highest scorer
+      const validCandidates = scoredCandidates
+        .filter((r) => r !== null && r.score >= SIMILARITY_THRESHOLD)
+        .sort((a, b) => b.score - a.score);
 
-      for (let q of allOtherQueries) {
-        // Looping through all the queries and running the python script
-        const otherUserId = q.userId.toString();
-        const isMatchExist = matchList.has(otherUserId);
-        if (isMatchExist) continue;
-
-        try {
-          const result = await runPythonScript(q.query, query);
-          const similarity = result.similarity_score;
-
-          console.log(
-            `Comparing User ID ${userId} with User ID ${otherUserId}: Similarity = ${similarity}`
-          );
-
-          if (similarity > highestSimilarity) {
-            bestMatch = otherUserId;
-            highestSimilarity = similarity;
-          }
-        } catch (error) {
-          console.error("Error running Python script:", error);
-        }
-      }
-      if (
-        bestMatch &&
-        highestSimilarity >= 0.5 &&
-        !matchList.has(bestMatch) &&
-        !matchList.has(userId) &&
-        !cancelled
-      ) {
-        await lockUser(userId);
-        await lockUser(bestMatch);
-        const matchedSocket = ongoingSearches.get(bestMatch)?.socket;
-        const selfSocket = ongoingSearches.get(userId)?.socket;
-        if (selfSocket) {
-          matchedSocket?.emit("search_update", {
-            matches: {
-              user: await UserDetail.findOne({ _id: userId }),
-              similarity: highestSimilarity,
-            },
-
-            message: "Search result found",
-          });
-        }
-        if (matchedSocket) {
-          selfSocket?.emit("search_update", {
-            matches: {
-              user: await UserDetail.findOne({ _id: bestMatch }),
-              similarity: highestSimilarity,
-            },
-
-            message: "Search result found",
-          });
-        }
-        matchList.set(userId, { match: bestMatch });
-        matchList.set(bestMatch, { match: userId });
-        await UserSearch.deleteOne({ userId });
-        await UserSearch.deleteOne({ userId: bestMatch });
-        ongoingSearches.delete(userId);
-        ongoingSearches.delete(bestMatch);
-        if (!matchedSocket && selfSocket && matchList.has(userId)) {
-          matchList.delete(userId);
-          socket.emit("search_update", {
-            matches: null,
-            message: "No result found",
-          });
-          return;
-        }
-        console.log(
-          `Match found and users ${userId} and ${bestMatch} removed from search`
-        );
+      if (validCandidates.length === 0) {
+        console.log(`[${userId}] No candidates above threshold ${SIMILARITY_THRESHOLD}`);
         return;
       }
 
-      if (attempts < maxAttempts && !cancelled) {
-        setTimeout(checkForMatches, checkInterval);
-      } else {
-        if (cancelled) {
-          socket.emit("search_update", {
-            cancel: true,
-            message: "Search has been cancelled",
-          });
-        } else {
-          socket.emit("search_update", {
-            matches: null,
-            message: "No result found",
-          });
+      // Walk the ranked list until we can lock both atomically in a deterministic order (Issue 2)
+      let bestMatch = null;
+      let highestSimilarity = 0;
+
+      for (const candidate of validCandidates) {
+        const candidateId = candidate.userId.toString();
+        if (matchList.has(candidateId)) continue;
+
+        // Deterministic locking order to prevent concurrent duplicate matching
+        const firstId = candidateId < userId ? candidateId : userId;
+        const secondId = candidateId < userId ? userId : candidateId;
+
+        const lockedFirst = await lockUser(firstId);
+        if (!lockedFirst) {
+          console.log(`[${userId}] Failed to lock first ID ${firstId} — skipping candidate ${candidateId}`);
+          continue;
         }
-        await UserSearch.deleteOne({ userId });
-        ongoingSearches.delete(userId);
-        console.log(
-          "Timeout reached, no match found",
-          "matchList:",
-          matchList,
-          "ongoingSearches:",
-          ongoingSearches
-        );
+
+        const lockedSecond = await lockUser(secondId);
+        if (!lockedSecond) {
+          console.log(`[${userId}] Failed to lock second ID ${secondId} — releasing first ID ${firstId} and skipping candidate ${candidateId}`);
+          await unlockUser(firstId);
+          continue;
+        }
+
+        // Successfully locked both!
+        bestMatch = candidateId;
+        highestSimilarity = candidate.score;
+        break; // stop at the first candidate pair we can successfully lock
       }
+
+      if (!bestMatch || matchList.has(userId) || cancelled) {
+        if (bestMatch) {
+          await Promise.all([unlockUser(bestMatch), unlockUser(userId)]);
+        }
+        return;
+      }
+
+      const matchedSocket = ongoingSearches.get(bestMatch)?.socket;
+      const selfSocket = ongoingSearches.get(userId)?.socket;
+
+      // Fetch both profiles in parallel
+      const [selfUserProfile, matchedUserProfile] = await Promise.all([
+        UserDetail.findOne({ _id: userId }),
+        UserDetail.findOne({ _id: bestMatch }),
+      ]);
+
+      // Issue 1: corrected emit targets — each party receives the other's profile
+      if (matchedSocket) {
+        matchedSocket.emit("search_update", {
+          matches: { user: selfUserProfile, similarity: highestSimilarity },
+          message: "Search result found",
+        });
+      }
+      if (selfSocket) {
+        selfSocket.emit("search_update", {
+          matches: { user: matchedUserProfile, similarity: highestSimilarity },
+          message: "Search result found",
+        });
+      }
+
+      matchList.set(userId, { match: bestMatch });
+      matchList.set(bestMatch, { match: userId });
+
+      await Promise.all([
+        UserSearch.deleteOne({ userId }),
+        UserSearch.deleteOne({ userId: bestMatch }),
+      ]);
+
+      cancel(); // remove event listener and clear timeout
+      ongoingSearches.delete(userId);
+      ongoingSearches.delete(bestMatch);
+
+      if (!matchedSocket) {
+        matchList.delete(userId);
+        matchList.delete(bestMatch);
+        socket.emit("search_update", {
+          matches: null,
+          message: "Match found but partner disconnected. Please search again.",
+        });
+        return;
+      }
+
+      console.log(`Match found: users ${userId} and ${bestMatch} paired successfully`);
     } catch (err) {
       console.error("Error during match checking:", err);
-      socket.emit("error", {
-        message: "An error occurred while checking for matches.",
-      });
-      await unlockUser(userId);
+      socket.emit("error", { message: "An error occurred while checking for matches." });
+      await Promise.all([
+        unlockUser(userId),
+        bestMatch ? unlockUser(bestMatch) : Promise.resolve(),
+      ]);
       ongoingSearches.delete(userId);
+      cancel();
     }
   };
 
+  // Issue 11: re-run on every new searcher event instead of polling on a fixed interval
+  const onNewSearcher = () => {
+    if (!cancelled && !matchList.has(userId)) checkForMatches();
+  };
+  matchingBus.on("new_searcher", onNewSearcher);
+
+  // Run an immediate first pass in case matching candidates already exist
   checkForMatches();
+
+  // Absolute 30-second deadline — emit timeout and clean up if still unmatched
+  timeoutHandle = setTimeout(async () => {
+    if (cancelled || matchList.has(userId)) return;
+    cancel();
+    socket.emit("search_update", { matches: null, message: "No result found" });
+    await UserSearch.deleteOne({ userId });
+    ongoingSearches.delete(userId);
+    console.log(`[${userId}] Search timed out after ${searchTimeoutDuration}ms`);
+  }, searchTimeoutDuration);
+
   return cancel;
 };
 app.post("/create-chat", async (req, res) => {
@@ -527,20 +619,23 @@ app.post("/add-items/:categoryId", upload, async (req, res) => {
 });
 // POST route to create a new category
 app.post("/add-explore-category", (req, res) => {
-    const { category } = req.body;
+  const { category } = req.body;
 
-    if (!category) {
-        return res.status(400).json({ message: "Category is required." });
-    }
+  if (!category) {
+    return res.status(400).json({ message: "Category is required." });
+  }
 
-    const newExplore = new Explore({
-        category,
-        list: [] // Initialize with an empty list or omit if your schema allows
-    });
+  const newExplore = new Explore({
+    category,
+    list: [], // Initialize with an empty list or omit if your schema allows
+  });
 
-    newExplore.save()
-        .then(explore => res.status(201).json(explore))
-        .catch(err => res.status(500).json({ message: "Error saving the category", error: err }));
+  newExplore
+    .save()
+    .then((explore) => res.status(201).json(explore))
+    .catch((err) =>
+      res.status(500).json({ message: "Error saving the category", error: err })
+    );
 });
 //Get all interests
 app.get("/explore", async (req, res) => {
@@ -556,43 +651,73 @@ app.get("/explore", async (req, res) => {
 io.on("connection", (socket) => {
   console.log("New WebSocket connection", socket.id);
   socket.on("submit_keyword", async ({ userId, query }) => {
-    if (!userId || !query) {
-      socket.emit("error", { message: "UserId and query are required." });
+    // Issue 7: trim and validate the query before doing anything
+    const trimmedQuery = (query ?? "").trim();
+    if (!userId || !trimmedQuery) {
+      socket.emit("error", { message: "UserId and a non-empty query are required." });
       return;
-    } else if (matchList.has(userId)) {
+    }
+    if (trimmedQuery.length < 3) {
+      socket.emit("error", { message: "Search query must be at least 3 characters." });
+      return;
+    }
+
+    // Issue 8: bind userId to this socket so cancel_search can validate the caller
+    socket.data.userId = userId;
+
+    // Issue 6: if the user was previously matched, clean up both sides before re-searching
+    if (matchList.has(userId)) {
+      const oldPartnerId = matchList.get(userId)?.match;
       matchList.delete(userId);
+      if (oldPartnerId) {
+        matchList.delete(oldPartnerId);
+        ongoingSearches.get(oldPartnerId)?.socket.emit("search_update", {
+          matches: null,
+          message: "Your match has started a new search.",
+        });
+      }
     }
 
     try {
       await UserSearch.findOneAndUpdate(
         { userId },
-        { query, created_at: new Date(), isLocked: false },
+        { query: trimmedQuery, created_at: new Date(), isLocked: false },
         { upsert: true }
       );
 
-      const cancel = await findMatch(userId, query, socket);
+      const cancel = await findMatch(userId, trimmedQuery, socket);
       ongoingSearches.set(userId, { socket, cancel });
+
+      // Issue 11: notify all waiting workers that a new candidate has entered the pool
+      matchingBus.emit("new_searcher", { userId, query: trimmedQuery });
     } catch (error) {
       console.error("Error during search submission:", error);
       socket.emit("error", { message: "An error occurred during the search." });
     }
   });
-  socket.on("cancel_search", async (data) => {
-    const { userId } = data;
+  socket.on("cancel_search", async () => {
+    // Issue 8: read userId from the socket itself rather than trusting client-supplied data
+    const userId = socket.data.userId;
+    if (!userId) return;
+
     ongoingSearches.get(userId)?.cancel();
-    await UserSearch.deleteOne({ userId });
-    await unlockUser(userId);
+    await Promise.all([
+      UserSearch.deleteOne({ userId }),
+      unlockUser(userId),
+    ]);
     ongoingSearches.delete(userId);
+
     if (matchList.has(userId)) {
-      //TODO: need rework
       const partnerId = matchList.get(userId)?.match;
       matchList.delete(userId);
-      matchList.delete(partnerId);
-      await unlockUser(partnerId);
-      ongoingSearches.get(partnerId)?.socket.emit("search_update", {
-        matches: null,
-        message: "No partner found",
-      });
+      if (partnerId) {
+        matchList.delete(partnerId);
+        await unlockUser(partnerId);
+        ongoingSearches.get(partnerId)?.socket.emit("search_update", {
+          matches: null,
+          message: "Your match cancelled their search.",
+        });
+      }
     }
   });
   socket.on("joinChat", ({ chatId }) => {
@@ -646,8 +771,32 @@ io.on("connection", (socket) => {
     // Optionally, emit an event to notify the client that the messages have been cleared
     io.emit("messagesCleared");
   });
-  socket.on("disconnect", () => {
-    console.log("Socket disconnected");
+  socket.on("disconnect", async () => {
+    console.log("Socket disconnected:", socket.id);
+
+    // Issue 3: clean up all search state associated with this specific socket
+    for (const [uid, entry] of ongoingSearches.entries()) {
+      if (entry.socket.id === socket.id) {
+        entry.cancel();
+        await UserSearch.deleteOne({ userId: uid });
+        ongoingSearches.delete(uid);
+
+        // If this user was already matched, release the partner from that pairing
+        if (matchList.has(uid)) {
+          const partnerId = matchList.get(uid)?.match;
+          matchList.delete(uid);
+          if (partnerId) {
+            matchList.delete(partnerId);
+            await unlockUser(partnerId);
+            ongoingSearches.get(partnerId)?.socket.emit("search_update", {
+              matches: null,
+              message: "Your match disconnected. Please search again.",
+            });
+          }
+        }
+        break;
+      }
+    }
   });
 });
 
