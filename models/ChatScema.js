@@ -37,5 +37,7 @@ const chatSchema = new mongoose.Schema(
   }
 );
 
+chatSchema.index({ participants: 1 });
+
 const Chat = mongoose.model("chat", chatSchema);
 export default Chat;

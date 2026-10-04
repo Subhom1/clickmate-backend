@@ -13,6 +13,7 @@ const userSearchSchema = new mongoose.Schema(
     },
     isLocked: {
       type: Boolean,
+      default: false,
     },
     created_at: {
       type: Date,
@@ -23,6 +24,10 @@ const userSearchSchema = new mongoose.Schema(
     collection: "search",
   }
 );
+
+userSearchSchema.index({ userId: 1 }, { unique: true });
+userSearchSchema.index({ isLocked: 1, created_at: 1 });
+userSearchSchema.index({ created_at: 1 }, { expireAfterSeconds: 300 });
 
 const UserSearch = mongoose.model("search", userSearchSchema);
 

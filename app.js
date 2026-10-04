@@ -11,52 +11,104 @@ import Chat from "./models/ChatScema.js";
 import Interest from "./models/InterestSchema.js";
 import multer from "multer";
 import path from "path";
+import { randomUUID } from "crypto";
+import { existsSync, readFileSync } from "fs";
 
 // Initialize Express app
 const app = express();
 const PORT = process.env.PORT || 5051;
 
+const loadLocalEnv = () => {
+  if (!existsSync(".env")) return;
+
+  const envFile = readFileSync(".env", "utf8");
+  for (const line of envFile.split("\n")) {
+    const trimmedLine = line.trim();
+    if (!trimmedLine || trimmedLine.startsWith("#")) continue;
+
+    const separatorIndex = trimmedLine.indexOf("=");
+    if (separatorIndex === -1) continue;
+
+    const key = trimmedLine.slice(0, separatorIndex).trim();
+    const value = trimmedLine.slice(separatorIndex + 1).trim();
+    if (key && process.env[key] === undefined) {
+      process.env[key] = value.replace(/^["']|["']$/g, "");
+    }
+  }
+};
+
+loadLocalEnv();
+
+const mongoUri = process.env.MONGODB_URI;
+const allowedOrigins = process.env.CORS_ORIGIN?.split(",").map((origin) =>
+  origin.trim()
+);
+
+if (!mongoUri) {
+  throw new Error("MONGODB_URI environment variable is required");
+}
+
 // Middleware
 app.use(express.json());
 app.use(express.static("./public")); // To serve images statically
-app.use(cors());
+app.use(
+  cors({
+    origin: allowedOrigins?.length ? allowedOrigins : true,
+  })
+);
 
 // Create HTTP server
 const server = http.createServer(app);
 
 // Attach WebSocket server to the HTTP server
-const io = new socketIo(server);
-
-const uri = `mongodb+srv://subhomkundu:5uOIiGCbYu6xUg1b@cluster0.k8g0qnb.mongodb.net/clickmate?retryWrites=true&w=majority&appName=Cluster0`;
+const io = new socketIo(server, {
+  cors: {
+    origin: allowedOrigins?.length ? allowedOrigins : true,
+  },
+});
 
 mongoose
-  .connect(uri)
+  .connect(mongoUri)
   .then(() => console.log("Connected to MongoDB"))
   .catch((err) => console.error("Error connecting to MongoDB:", err));
+
+const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
+
+const normalizeEmail = (email) =>
+  typeof email === "string" ? email.trim().toLowerCase() : "";
+
+const normalizeSearchQuery = (query) =>
+  typeof query === "string" ? query.trim().replace(/\s+/g, " ") : "";
 
 // To register a user
 app.post("/register", async (req, res) => {
   const { name, email } = req.body;
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedName = typeof name === "string" ? name.trim() : "";
 
-  const oldUser = await UserDetail.findOne({ email });
+  if (!normalizedName || !normalizedEmail) {
+    return res.status(400).send({ data: "Name and email are required" });
+  }
+
+  const oldUser = await UserDetail.findOne({ email: normalizedEmail });
   if (oldUser) return res.status(409).send({ data: "User already exists!" });
   try {
     const newUser = await UserDetail.create({
-      fullname: name.toLowerCase(),
-      email: email.toLowerCase(),
-      created_at: Date(),
-      updated_at: Date(),
+      fullname: normalizedName.toLowerCase(),
+      email: normalizedEmail,
+      created_at: new Date(),
+      updated_at: new Date(),
     });
-    res.status(201).send({ status: "ok", statusCode: 200, data: newUser });
+    res.status(201).send({ status: "ok", statusCode: 201, data: newUser });
   } catch (err) {
-    res.status(500).send({ status: "error", data: err.res });
+    res.status(500).send({ status: "error", data: err.message });
   }
 });
 //===============
 // User Operations
 // Fetch user's details by email
 app.get("/user/:email", async (req, res) => {
-  const { email } = req.params;
+  const email = normalizeEmail(req.params.email);
   try {
     const user = await UserDetail.findOne({ email })
       .populate("interests")
@@ -75,6 +127,9 @@ app.get("/user/:email", async (req, res) => {
 app.get("/users/:userId/friends", async (req, res) => {
   try {
     const { userId } = req.params;
+    if (!isValidObjectId(userId)) {
+      return res.status(400).json({ message: "Invalid user ID" });
+    }
 
     // Find the user by ID and populate the friends field
     const user = await UserDetail.findById(userId).populate(
@@ -96,6 +151,10 @@ app.get("/users/:userId/friends", async (req, res) => {
 app.patch("/user/:userId", async (req, res) => {
   try {
     const userId = req.params.userId;
+    if (!isValidObjectId(userId)) {
+      return res.status(400).json({ message: "Invalid user ID" });
+    }
+
     const updateFields = {};
     // Dynamically add fields to the update object if they are present in the request body
     if (req.body.fullname) {
@@ -141,6 +200,10 @@ app.patch("/user/:userId", async (req, res) => {
 app.delete("/deleteUser/:uid/", async (req, res) => {
   const { uid } = req.params;
 
+  if (!isValidObjectId(uid)) {
+    return res.status(400).send({ message: "Invalid user ID" });
+  }
+
   try {
     // Delete user from MongoDB using Mongoose
     const result = await UserDetail.deleteOne({ _id: uid });
@@ -175,10 +238,11 @@ const matchList = new Map();
 
 const searchTimeoutDuration = 30000; // 30 seconds
 const checkInterval = 1000; // 1 second
+const minimumSimilarityScore = 0.5;
 
 const runPythonScript = async (text1, text2) => {
   return new Promise((resolve, reject) => {
-    const process = spawn("python3", [
+    const childProcess = spawn(process.env.PYTHON_BIN || "python3", [
       "scripts/calculate_similarity.py",
       text1,
       text2,
@@ -187,15 +251,15 @@ const runPythonScript = async (text1, text2) => {
     let result = "";
     let error = "";
 
-    process.stdout.on("data", (data) => {
+    childProcess.stdout.on("data", (data) => {
       result += data.toString();
     });
 
-    process.stderr.on("data", (data) => {
+    childProcess.stderr.on("data", (data) => {
       error += data.toString();
     });
 
-    process.on("close", (code) => {
+    childProcess.on("close", (code) => {
       if (code === 0) {
         try {
           const jsonResult = JSON.parse(result);
@@ -223,13 +287,60 @@ const unlockUser = async (userId) => {
   await UserSearch.findOneAndUpdate({ userId }, { isLocked: false });
 };
 
-const findMatch = async (userId, query, socket) => {
+const cleanupSearch = async (userId) => {
+  const currentSearch = ongoingSearches.get(userId);
+  if (currentSearch?.timer) {
+    clearTimeout(currentSearch.timer);
+  }
+  currentSearch?.cancel?.();
+  await UserSearch.deleteOne({ userId });
+  await unlockUser(userId);
+  ongoingSearches.delete(userId);
+};
+
+const clearMatch = (userId) => {
+  const partnerId = matchList.get(userId)?.match;
+  matchList.delete(userId);
+  if (partnerId) {
+    matchList.delete(partnerId);
+  }
+  return partnerId;
+};
+
+const lockMatchPair = async (userId, otherUserId) => {
+  const selfLocked = await lockUser(userId);
+  if (!selfLocked) return false;
+
+  const otherLocked = await lockUser(otherUserId);
+  if (!otherLocked) {
+    await unlockUser(userId);
+    return false;
+  }
+
+  return true;
+};
+
+const findMatch = (userId, query, socket) => {
   console.log("findMatch function called for User ID:", userId);
   let cancelled = false;
+  let timer = null;
+  const similarityCache = new Map();
 
   const cancel = () => {
     cancelled = true;
+    if (timer) {
+      clearTimeout(timer);
+    }
   };
+
+  const scheduleNextCheck = () => {
+    timer = setTimeout(checkForMatches, checkInterval);
+    const currentSearch = ongoingSearches.get(userId);
+    if (currentSearch) {
+      currentSearch.timer = timer;
+    }
+  };
+
   let attempts = 0;
   const maxAttempts = searchTimeoutDuration / checkInterval;
 
@@ -240,7 +351,9 @@ const findMatch = async (userId, query, socket) => {
       const allOtherQueries = await UserSearch.find({
         isLocked: false,
         userId: { $ne: userId },
-      }).lean(); // Used lean() to improve performance by returning plain JavaScript objects
+      })
+        .sort({ created_at: 1 })
+        .lean(); // Used lean() to improve performance by returning plain JavaScript objects
 
       console.log(
         `Attempt ${attempts}: Found ${allOtherQueries.length} other queries`
@@ -254,10 +367,19 @@ const findMatch = async (userId, query, socket) => {
         const otherUserId = q.userId.toString();
         const isMatchExist = matchList.has(otherUserId);
         if (isMatchExist) continue;
+        if (!ongoingSearches.has(otherUserId)) continue;
 
         try {
-          const result = await runPythonScript(q.query, query);
+          const candidateTimestamp = q.created_at
+            ? new Date(q.created_at).getTime()
+            : 0;
+          const cacheKey = `${otherUserId}:${candidateTimestamp}`;
+          const result =
+            similarityCache.get(cacheKey) ||
+            (await runPythonScript(q.query, query));
+          similarityCache.set(cacheKey, result);
           const similarity = result.similarity_score;
+          if (typeof similarity !== "number") continue;
 
           console.log(
             `Comparing User ID ${userId} with User ID ${otherUserId}: Similarity = ${similarity}`
@@ -273,15 +395,26 @@ const findMatch = async (userId, query, socket) => {
       }
       if (
         bestMatch &&
-        highestSimilarity >= 0.5 &&
+        highestSimilarity >= minimumSimilarityScore &&
         !matchList.has(bestMatch) &&
         !matchList.has(userId) &&
         !cancelled
       ) {
-        await lockUser(userId);
-        await lockUser(bestMatch);
         const matchedSocket = ongoingSearches.get(bestMatch)?.socket;
         const selfSocket = ongoingSearches.get(userId)?.socket;
+
+        if (!matchedSocket || !selfSocket) {
+          await cleanupSearch(bestMatch);
+          scheduleNextCheck();
+          return;
+        }
+
+        const locked = await lockMatchPair(userId, bestMatch);
+        if (!locked) {
+          scheduleNextCheck();
+          return;
+        }
+
         if (selfSocket) {
           matchedSocket?.emit("search_update", {
             matches: {
@@ -308,14 +441,6 @@ const findMatch = async (userId, query, socket) => {
         await UserSearch.deleteOne({ userId: bestMatch });
         ongoingSearches.delete(userId);
         ongoingSearches.delete(bestMatch);
-        if (!matchedSocket && selfSocket && matchList.has(userId)) {
-          matchList.delete(userId);
-          socket.emit("search_update", {
-            matches: null,
-            message: "No result found",
-          });
-          return;
-        }
         console.log(
           `Match found and users ${userId} and ${bestMatch} removed from search`
         );
@@ -323,7 +448,7 @@ const findMatch = async (userId, query, socket) => {
       }
 
       if (attempts < maxAttempts && !cancelled) {
-        setTimeout(checkForMatches, checkInterval);
+        scheduleNextCheck();
       } else {
         if (cancelled) {
           socket.emit("search_update", {
@@ -337,6 +462,7 @@ const findMatch = async (userId, query, socket) => {
           });
         }
         await UserSearch.deleteOne({ userId });
+        await unlockUser(userId);
         ongoingSearches.delete(userId);
         console.log(
           "Timeout reached, no match found",
@@ -356,8 +482,8 @@ const findMatch = async (userId, query, socket) => {
     }
   };
 
-  checkForMatches();
-  return cancel;
+  timer = setTimeout(checkForMatches, 0);
+  return { cancel, timer };
 };
 app.post("/create-chat", async (req, res) => {
   try {
@@ -365,6 +491,12 @@ app.post("/create-chat", async (req, res) => {
     // Validate request
     if (!user1Id || !user2Id) {
       return res.status(400).send("User IDs are required");
+    }
+    if (!isValidObjectId(user1Id) || !isValidObjectId(user2Id)) {
+      return res.status(400).send("Invalid user IDs");
+    }
+    if (user1Id === user2Id) {
+      return res.status(400).send("A user cannot chat with themselves");
     }
     // Guard clause: Check if a chat thread already exists between the two users
     const existingChat = await Chat.findOne({
@@ -402,6 +534,9 @@ app.post("/create-chat", async (req, res) => {
 app.get("/chat/:user1Id/:user2Id", async (req, res) => {
   try {
     const { user1Id, user2Id } = req.params;
+    if (!isValidObjectId(user1Id) || !isValidObjectId(user2Id)) {
+      return res.status(400).json({ msg: "Invalid user IDs" });
+    }
 
     // Find the chat that includes both user1Id and user2Id in participants
     const chat = await Chat.findOne({
@@ -435,6 +570,10 @@ const saveMessage = async (chatId, message) => {
 // Fetch un-read message of users
 app.get("/unread-messages/:userId", async (req, res) => {
   const { userId } = req.params;
+  if (!isValidObjectId(userId)) {
+    return res.status(400).send("Invalid user ID");
+  }
+
   try {
     // Find all chats where the current user is a participant
     const chats = await Chat.find({ participants: userId });
@@ -472,7 +611,9 @@ const upload = multer({
     filename: function (req, file, cb) {
       cb(
         null,
-        file.fieldname + "-" + Date.now() + path.extname(file.originalname)
+        `${file.fieldname}-${Date.now()}-${randomUUID()}${path.extname(
+          file.originalname
+        )}`
       );
     },
   }),
@@ -501,6 +642,10 @@ function checkFileType(file, cb) {
 app.post("/add-items/:categoryId", upload, async (req, res) => {
   console.log(req.body, "body");
   const { categoryId } = req.params;
+  if (!isValidObjectId(categoryId)) {
+    return res.status(400).send({ message: "Invalid category ID" });
+  }
+
   const files = req.files;
   const items = req.body.items;
 
@@ -509,7 +654,12 @@ app.post("/add-items/:categoryId", upload, async (req, res) => {
   }
 
   try {
-    const itemData = JSON.parse(items).map((item, index) => ({
+    const parsedItems = JSON.parse(items);
+    if (!Array.isArray(parsedItems)) {
+      return res.status(400).send({ message: "Items must be an array." });
+    }
+
+    const itemData = parsedItems.map((item, index) => ({
       text: item.text,
       imgUrl: files[index] ? `/uploads/${files[index].filename}` : null,
     }));
@@ -557,22 +707,35 @@ app.get("/explore", async (req, res) => {
 io.on("connection", (socket) => {
   console.log("New WebSocket connection", socket.id);
   socket.on("submit_keyword", async ({ userId, query }) => {
-    if (!userId || !query) {
+    const normalizedQuery = normalizeSearchQuery(query);
+
+    if (!userId || !normalizedQuery) {
       socket.emit("error", { message: "UserId and query are required." });
       return;
-    } else if (matchList.has(userId)) {
-      matchList.delete(userId);
+    }
+    if (!isValidObjectId(userId)) {
+      socket.emit("error", { message: "Invalid user ID." });
+      return;
+    }
+    if (normalizedQuery.length > 500) {
+      socket.emit("error", { message: "Search query is too long." });
+      return;
+    }
+
+    if (matchList.has(userId)) {
+      clearMatch(userId);
     }
 
     try {
+      await cleanupSearch(userId);
       await UserSearch.findOneAndUpdate(
         { userId },
-        { query, created_at: new Date(), isLocked: false },
+        { query: normalizedQuery, created_at: new Date(), isLocked: false },
         { upsert: true }
       );
 
-      const cancel = await findMatch(userId, query, socket);
-      ongoingSearches.set(userId, { socket, cancel });
+      const search = findMatch(userId, normalizedQuery, socket);
+      ongoingSearches.set(userId, { socket, ...search });
     } catch (error) {
       console.error("Error during search submission:", error);
       socket.emit("error", { message: "An error occurred during the search." });
@@ -580,17 +743,15 @@ io.on("connection", (socket) => {
   });
   socket.on("cancel_search", async (data) => {
     const { userId } = data;
-    ongoingSearches.get(userId)?.cancel();
-    await UserSearch.deleteOne({ userId });
-    await unlockUser(userId);
-    ongoingSearches.delete(userId);
+    if (!isValidObjectId(userId)) return;
+
+    await cleanupSearch(userId);
     if (matchList.has(userId)) {
-      //TODO: need rework
-      const partnerId = matchList.get(userId)?.match;
-      matchList.delete(userId);
-      matchList.delete(partnerId);
-      await unlockUser(partnerId);
-      ongoingSearches.get(partnerId)?.socket.emit("search_update", {
+      const partnerId = clearMatch(userId);
+      if (partnerId) {
+        await unlockUser(partnerId);
+      }
+      ongoingSearches.get(partnerId)?.socket?.emit("search_update", {
         matches: null,
         message: "No partner found",
       });
@@ -604,14 +765,17 @@ io.on("connection", (socket) => {
   });
   // When a message is sent
   socket.on("sendMessage", async ({ chatId, message }) => {
-    if (!chatId && !message) return;
+    if (!chatId || !message || !isValidObjectId(chatId)) return;
+    if (!isValidObjectId(message.sender) || !message.content?.trim()) return;
+
     const newMessage = {
       sender: message.sender,
-      content: message.content,
+      content: message.content.trim(),
       readBy: [message.sender],
     };
 
     const updatedChat = await saveMessage(chatId, newMessage);
+    if (!updatedChat) return;
 
     io.to(chatId).emit(
       "receiveMessage",
@@ -622,6 +786,8 @@ io.on("connection", (socket) => {
   });
   // When marking messages as read
   socket.on("markAsRead", async ({ chatId, userId }) => {
+    if (!isValidObjectId(chatId) || !isValidObjectId(userId)) return;
+
     try {
       await Chat.updateMany(
         { _id: chatId },
@@ -635,6 +801,8 @@ io.on("connection", (socket) => {
   });
   // Clear all messages by chatId
   socket.on("clearMessages", async ({ chatId }) => {
+    if (!isValidObjectId(chatId)) return;
+
     try {
       await Chat.updateOne(
         { _id: chatId }, // Match the chat by chatId
@@ -647,8 +815,24 @@ io.on("connection", (socket) => {
     // Optionally, emit an event to notify the client that the messages have been cleared
     io.emit("messagesCleared");
   });
-  socket.on("disconnect", () => {
+  socket.on("disconnect", async () => {
     console.log("Socket disconnected");
+    const disconnectedSearches = [...ongoingSearches.entries()].filter(
+      ([, search]) => search.socket.id === socket.id
+    );
+    await Promise.all(
+      disconnectedSearches.map(async ([userId]) => {
+        const partnerId = clearMatch(userId);
+        await cleanupSearch(userId);
+        if (partnerId) {
+          await unlockUser(partnerId);
+          ongoingSearches.get(partnerId)?.socket?.emit("search_update", {
+            matches: null,
+            message: "No partner found",
+          });
+        }
+      })
+    );
   });
 });
 
@@ -712,38 +896,5 @@ server.listen(PORT, () => {
 //     } else {
 //       res.status(500).json({ message: error.message });
 //     }
-//   }
-// });
-
-//===============
-// const DAILY_API_KEY =
-//   "3c8cb975ccb3db342cdec030f501796ba80f1e7c49e65c5f983bc5103abcaa6e";
-
-// app.post("/start-call", async (req, res) => {
-//   const { userId1, userId2, socket } = req.body;
-//   console.log(userId1, userId2, socket, "123");
-//   return;
-//   try {
-//     const roomResponse = await axios.post(
-//       "https://api.daily.co/v1/rooms",
-//       { properties: { exp: Math.round(Date.now() / 1000) + 3600 } }, // Room expires in 1 hour
-//       {
-//         headers: {
-//           Authorization: `Bearer ${DAILY_API_KEY}`,
-//           "Content-Type": "application/json",
-//         },
-//       }
-//     );
-
-//     const roomUrl = roomResponse.data.url;
-
-//     // Notify both users with the room URL (using your socket implementation)
-//     socket.to(userId1).emit("call-invite", { roomUrl, matchedUser: userId2 });
-//     socket.to(userId2).emit("call-invite", { roomUrl, matchedUser: userId1 });
-
-//     res.json({ success: true, roomUrl });
-//   } catch (error) {
-//     console.error("Error creating room:", error);
-//     res.status(500).json({ success: false, message: "Failed to create room" });
 //   }
 // });

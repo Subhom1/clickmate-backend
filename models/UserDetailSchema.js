@@ -4,7 +4,7 @@ const UserDetailSchema = new mongoose.Schema(
   {
     fullname: { type: String, required: true },
     email: { type: String, required: true, unique: true },
-    bio: { type: String, default: 'No Bio'},
+    bio: { type: String, default: "No Bio" },
     birthdate: {
       type: Date,
       required: false,
@@ -23,8 +23,8 @@ const UserDetailSchema = new mongoose.Schema(
     search_reset_date: {
       type: Date,
     },
-    created_at: { type: Date, default: Date() },
-    updated_at: { type: Date, default: Date() },
+    created_at: { type: Date, default: Date.now },
+    updated_at: { type: Date, default: Date.now },
   },
   {
     collection: "user",
