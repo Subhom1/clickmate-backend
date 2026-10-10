@@ -9,7 +9,7 @@ const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
           new URL(
             "./clickmate-57ede-firebase-adminsdk-7qhtz-41c63795e9.json",
             import.meta.url
-          )
+        )
       )
     );
 
