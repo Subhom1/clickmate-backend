@@ -41,18 +41,82 @@ loadLocalEnv();
 const mongoUri = process.env.MONGODB_URI;
 const allowedOrigins = process.env.CORS_ORIGIN?.split(",").map((origin) =>
   origin.trim()
-);
+).filter(Boolean);
+
+const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
+
+const normalizeEmail = (email) =>
+  typeof email === "string" ? email.trim().toLowerCase() : "";
+
+const normalizeSearchQuery = (query) =>
+  typeof query === "string" ? query.trim().replace(/\s+/g, " ") : "";
 
 if (!mongoUri) {
   throw new Error("MONGODB_URI environment variable is required");
 }
 
+const { default: admin } = await import("./FirebaseAdmin.js");
+
+const authenticate = async (req, res, next) => {
+  const authorization = req.get("authorization");
+  const token = authorization?.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length)
+    : null;
+
+  if (!token) {
+    return res.status(401).json({ message: "Authentication required" });
+  }
+
+  try {
+    req.auth = await admin.auth().verifyIdToken(token);
+    next();
+  } catch (error) {
+    console.error("Authentication failed:", error.message);
+    res.status(401).json({ message: "Invalid authentication token" });
+  }
+};
+
+const loadAuthenticatedUser = async (req, res, next) => {
+  try {
+    const email = normalizeEmail(req.auth?.email);
+    if (!email) {
+      return res
+        .status(403)
+        .json({ message: "Authenticated email is required" });
+    }
+
+    const user = await UserDetail.findOne({ email });
+    if (!user) {
+      return res.status(403).json({ message: "User profile not found" });
+    }
+
+    req.user = user;
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
+const requireOwnUser = (req, res, next) => {
+  if (req.params.userId !== req.user._id.toString()) {
+    return res.status(403).json({ message: "You can only access your own user" });
+  }
+  next();
+};
+
+const requireAdmin = (req, res, next) => {
+  if (req.auth?.admin !== true && req.auth?.role !== "admin") {
+    return res.status(403).json({ message: "Administrator access required" });
+  }
+  next();
+};
+
 // Middleware
-app.use(express.json());
+app.use(express.json({ limit: "100kb" }));
 app.use(express.static("./public")); // To serve images statically
 app.use(
   cors({
-    origin: allowedOrigins?.length ? allowedOrigins : true,
+    origin: allowedOrigins?.length ? allowedOrigins : false,
   })
 );
 
@@ -62,22 +126,9 @@ const server = http.createServer(app);
 // Attach WebSocket server to the HTTP server
 const io = new socketIo(server, {
   cors: {
-    origin: allowedOrigins?.length ? allowedOrigins : true,
+    origin: allowedOrigins?.length ? allowedOrigins : false,
   },
 });
-
-mongoose
-  .connect(mongoUri)
-  .then(() => console.log("Connected to MongoDB"))
-  .catch((err) => console.error("Error connecting to MongoDB:", err));
-
-const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
-
-const normalizeEmail = (email) =>
-  typeof email === "string" ? email.trim().toLowerCase() : "";
-
-const normalizeSearchQuery = (query) =>
-  typeof query === "string" ? query.trim().replace(/\s+/g, " ") : "";
 
 // To register a user
 app.post("/register", async (req, res) => {
@@ -89,9 +140,10 @@ app.post("/register", async (req, res) => {
     return res.status(400).send({ data: "Name and email are required" });
   }
 
-  const oldUser = await UserDetail.findOne({ email: normalizedEmail });
-  if (oldUser) return res.status(409).send({ data: "User already exists!" });
   try {
+    const oldUser = await UserDetail.findOne({ email: normalizedEmail });
+    if (oldUser) return res.status(409).send({ data: "User already exists!" });
+
     const newUser = await UserDetail.create({
       fullname: normalizedName.toLowerCase(),
       email: normalizedEmail,
@@ -106,8 +158,12 @@ app.post("/register", async (req, res) => {
 //===============
 // User Operations
 // Fetch user's details by email
-app.get("/user/:email", async (req, res) => {
+app.get("/user/:email", authenticate, async (req, res) => {
   const email = normalizeEmail(req.params.email);
+  if (email !== normalizeEmail(req.auth.email)) {
+    return res.status(403).json({ message: "You can only access your own user" });
+  }
+
   try {
     const user = await UserDetail.findOne({ email })
       .populate("interests")
@@ -119,11 +175,17 @@ app.get("/user/:email", async (req, res) => {
 
     res.json(user);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("Error fetching user:", error);
+    res.status(500).json({ message: "Unable to fetch user" });
   }
 });
 //To fetch all the friends of a user
-app.get("/users/:userId/friends", async (req, res) => {
+app.get(
+  "/users/:userId/friends",
+  authenticate,
+  loadAuthenticatedUser,
+  requireOwnUser,
+  async (req, res) => {
   try {
     const { userId } = req.params;
     if (!isValidObjectId(userId)) {
@@ -143,11 +205,18 @@ app.get("/users/:userId/friends", async (req, res) => {
     // Return the list of friends
     res.json(user.friends);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("Error fetching friends:", error);
+    res.status(500).json({ message: "Unable to fetch friends" });
   }
-});
+  }
+);
 //To update the user's details
-app.patch("/user/:userId", async (req, res) => {
+app.patch(
+  "/user/:userId",
+  authenticate,
+  loadAuthenticatedUser,
+  requireOwnUser,
+  async (req, res) => {
   try {
     const userId = req.params.userId;
     if (!isValidObjectId(userId)) {
@@ -192,23 +261,31 @@ app.patch("/user/:userId", async (req, res) => {
 
     res.status(200).json(updatedUser);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("Error updating user:", error);
+    res.status(500).json({ message: "Unable to update user" });
   }
-});
+  }
+);
 //Delete user
-app.delete("/deleteUser/:uid/", async (req, res) => {
+app.delete(
+  "/deleteUser/:uid/",
+  authenticate,
+  loadAuthenticatedUser,
+  async (req, res) => {
   const { uid } = req.params;
 
   if (!isValidObjectId(uid)) {
     return res.status(400).send({ message: "Invalid user ID" });
   }
+  if (uid !== req.user._id.toString()) {
+    return res.status(403).json({ message: "You can only delete your own user" });
+  }
 
   try {
-    // Delete user from MongoDB using Mongoose
+    await admin.auth().deleteUser(req.auth.uid);
     const result = await UserDetail.deleteOne({ _id: uid });
 
     if (result.deletedCount === 1) {
-      // Delete user from Firebase Auth
       res.status(200).send({
         message: "User deleted successfully from Firebase and MongoDB",
       });
@@ -219,16 +296,18 @@ app.delete("/deleteUser/:uid/", async (req, res) => {
     console.error("Error deleting user:", error);
     res
       .status(500)
-      .send({ message: "Error deleting user", error: error.message });
+      .send({ message: "Error deleting user" });
   }
-});
+  }
+);
 //Get all interests
 app.get("/interests", async (req, res) => {
   try {
     const interests = await Interest.find();
     res.status(200).json(interests);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("Error fetching interests:", error);
+    res.status(500).json({ message: "Unable to fetch interests" });
   }
 });
 
@@ -484,7 +563,7 @@ const findMatch = (userId, query, socket) => {
   timer = setTimeout(checkForMatches, 0);
   return { cancel, timer };
 };
-app.post("/create-chat", async (req, res) => {
+app.post("/create-chat", authenticate, loadAuthenticatedUser, async (req, res) => {
   try {
     const { user1Id, user2Id } = req.body;
     // Validate request
@@ -496,6 +575,9 @@ app.post("/create-chat", async (req, res) => {
     }
     if (user1Id === user2Id) {
       return res.status(400).send("A user cannot chat with themselves");
+    }
+    if (![user1Id, user2Id].includes(req.user._id.toString())) {
+      return res.status(403).json({ message: "You must be a chat participant" });
     }
     // Guard clause: Check if a chat thread already exists between the two users
     const existingChat = await Chat.findOne({
@@ -530,11 +612,18 @@ app.post("/create-chat", async (req, res) => {
     res.status(500).send("Server Error");
   }
 });
-app.get("/chat/:user1Id/:user2Id", async (req, res) => {
+app.get(
+  "/chat/:user1Id/:user2Id",
+  authenticate,
+  loadAuthenticatedUser,
+  async (req, res) => {
   try {
     const { user1Id, user2Id } = req.params;
     if (!isValidObjectId(user1Id) || !isValidObjectId(user2Id)) {
       return res.status(400).json({ msg: "Invalid user IDs" });
+    }
+    if (![user1Id, user2Id].includes(req.user._id.toString())) {
+      return res.status(403).json({ message: "You must be a chat participant" });
     }
 
     // Find the chat that includes both user1Id and user2Id in participants
@@ -551,7 +640,8 @@ app.get("/chat/:user1Id/:user2Id", async (req, res) => {
     console.error(error);
     res.status(500).send("Server Error");
   }
-});
+  }
+);
 
 const saveMessage = async (chatId, message) => {
   try {
@@ -567,7 +657,12 @@ const saveMessage = async (chatId, message) => {
   }
 };
 // Fetch un-read message of users
-app.get("/unread-messages/:userId", async (req, res) => {
+app.get(
+  "/unread-messages/:userId",
+  authenticate,
+  loadAuthenticatedUser,
+  requireOwnUser,
+  async (req, res) => {
   const { userId } = req.params;
   if (!isValidObjectId(userId)) {
     return res.status(400).send("Invalid user ID");
@@ -600,7 +695,8 @@ app.get("/unread-messages/:userId", async (req, res) => {
     console.error(error);
     res.status(500).send("Server error");
   }
-});
+  }
+);
 
 // Initialize upload variable
 const upload = multer({
@@ -624,22 +720,28 @@ const upload = multer({
 
 // Check File Type
 function checkFileType(file, cb) {
-  // Allowed ext
-  const filetypes = /jpeg|jpg|png|gif/;
-  // Check ext
-  const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-  // Check mime
-  const mimetype = filetypes.test(file.mimetype);
+  const allowedTypes = new Map([
+    [".jpeg", "image/jpeg"],
+    [".jpg", "image/jpeg"],
+    [".png", "image/png"],
+    [".gif", "image/gif"],
+  ]);
+  const extension = path.extname(file.originalname).toLowerCase();
+  const mimetype = allowedTypes.get(extension);
 
-  if (mimetype && extname) {
+  if (mimetype === file.mimetype) {
     return cb(null, true);
   } else {
-    cb("Error: Images Only!");
+    cb(new Error("Only JPEG, PNG, and GIF images are allowed"));
   }
 }
 // Route to add items to an existing list in a document
-app.post("/add-items/:categoryId", upload, async (req, res) => {
-  console.log(req.body, "body");
+app.post(
+  "/add-items/:categoryId",
+  authenticate,
+  requireAdmin,
+  upload,
+  async (req, res) => {
   const { categoryId } = req.params;
   if (!isValidObjectId(categoryId)) {
     return res.status(400).send({ message: "Invalid category ID" });
@@ -657,59 +759,114 @@ app.post("/add-items/:categoryId", upload, async (req, res) => {
     if (!Array.isArray(parsedItems)) {
       return res.status(400).send({ message: "Items must be an array." });
     }
+    if (parsedItems.length === 0 || parsedItems.length > 10) {
+      return res
+        .status(400)
+        .send({ message: "Items must contain between 1 and 10 entries." });
+    }
+    if (!files || files.length !== parsedItems.length) {
+      return res
+        .status(400)
+        .send({ message: "Each item must include exactly one image." });
+    }
 
-    const itemData = parsedItems.map((item, index) => ({
-      text: item.text,
-      imgUrl: files[index] ? `/uploads/${files[index].filename}` : null,
-    }));
+    const itemData = parsedItems.map((item, index) => {
+      const text = typeof item.text === "string" ? item.text.trim() : "";
+      if (!text || text.length > 500) {
+        throw new Error("Each item text must be between 1 and 500 characters");
+      }
+      return {
+        text,
+        imgUrl: `/uploads/${files[index].filename}`,
+      };
+    });
 
     const updatedExplore = await Explore.findByIdAndUpdate(
       categoryId,
       { $push: { list: { $each: itemData } } },
-      { new: true, safe: true, upsert: true }
+      { new: true, upsert: true }
     );
 
     res.status(200).json(updatedExplore);
   } catch (error) {
     console.error("Error adding items:", error);
-    res.status(500).send({ message: "Failed to add items", error: error });
+    res.status(400).send({ message: error.message });
   }
-});
+  }
+);
 // POST route to create a new category
-app.post("/add-explore-category", (req, res) => {
-    const { category } = req.body;
+app.post(
+  "/add-explore-category",
+  authenticate,
+  requireAdmin,
+  (req, res) => {
+    const category =
+      typeof req.body.category === "string" ? req.body.category.trim() : "";
 
-    if (!category) {
+    if (!category || category.length > 100) {
         return res.status(400).json({ message: "Category is required." });
     }
 
     const newExplore = new Explore({
         category,
-        list: [] // Initialize with an empty list or omit if your schema allows
+        list: [],
     });
 
     newExplore.save()
-        .then(explore => res.status(201).json(explore))
-        .catch(err => res.status(500).json({ message: "Error saving the category", error: err }));
-});
+      .then((explore) => res.status(201).json(explore))
+      .catch((error) => {
+        console.error("Error saving the category:", error);
+        res.status(500).json({ message: "Unable to save the category" });
+      });
+  }
+);
 //Get all interests
 app.get("/explore", async (req, res) => {
   try {
     const explore = await Explore.find();
     res.status(200).json(explore);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("Error fetching explore categories:", error);
+    res.status(500).json({ message: "Unable to fetch explore categories" });
   }
 });
 
 //=========== All socket operations
+io.use(async (socket, next) => {
+  const token = socket.handshake.auth?.token;
+  if (!token) {
+    return next(new Error("Authentication required"));
+  }
+
+  try {
+    const auth = await admin.auth().verifyIdToken(token);
+    const email = normalizeEmail(auth.email);
+    const user = email ? await UserDetail.findOne({ email }) : null;
+    if (!user) {
+      return next(new Error("User profile not found"));
+    }
+
+    socket.auth = auth;
+    socket.user = user;
+    next();
+  } catch (error) {
+    console.error("Socket authentication failed:", error.message);
+    next(new Error("Invalid authentication token"));
+  }
+});
+
 io.on("connection", (socket) => {
   console.log("New WebSocket connection", socket.id);
-  socket.on("submit_keyword", async ({ userId, query }) => {
+  socket.on("submit_keyword", async ({ userId, query } = {}) => {
     const normalizedQuery = normalizeSearchQuery(query);
+    const authenticatedUserId = socket.user._id.toString();
 
     if (!userId || !normalizedQuery) {
       socket.emit("error", { message: "UserId and query are required." });
+      return;
+    }
+    if (userId !== authenticatedUserId) {
+      socket.emit("error", { message: "You can only search as yourself." });
       return;
     }
     if (!isValidObjectId(userId)) {
@@ -740,8 +897,8 @@ io.on("connection", (socket) => {
       socket.emit("error", { message: "An error occurred during the search." });
     }
   });
-  socket.on("cancel_search", async (data) => {
-    const { userId } = data;
+  socket.on("cancel_search", async ({ userId } = {}) => {
+    if (userId !== socket.user._id.toString()) return;
     if (!isValidObjectId(userId)) return;
 
     await cleanupSearch(userId);
@@ -756,16 +913,31 @@ io.on("connection", (socket) => {
       });
     }
   });
-  socket.on("joinChat", ({ chatId }) => {
-    socket.join(chatId);
+  socket.on("joinChat", async ({ chatId } = {}) => {
+    if (!isValidObjectId(chatId)) return;
+    const chat = await Chat.exists({
+      _id: chatId,
+      participants: socket.user._id,
+    });
+    if (chat) {
+      socket.join(chatId);
+    }
   });
-  socket.on("leaveChat", ({ chatId }) => {
+  socket.on("leaveChat", ({ chatId } = {}) => {
+    if (!isValidObjectId(chatId)) return;
     socket.leave(chatId);
   });
   // When a message is sent
-  socket.on("sendMessage", async ({ chatId, message }) => {
+  socket.on("sendMessage", async ({ chatId, message } = {}) => {
     if (!chatId || !message || !isValidObjectId(chatId)) return;
     if (!isValidObjectId(message.sender) || !message.content?.trim()) return;
+    if (message.sender !== socket.user._id.toString()) return;
+
+    const chat = await Chat.exists({
+      _id: chatId,
+      participants: socket.user._id,
+    });
+    if (!chat) return;
 
     const newMessage = {
       sender: message.sender,
@@ -784,12 +956,13 @@ io.on("connection", (socket) => {
     io.emit("updateUnreadCounts");
   });
   // When marking messages as read
-  socket.on("markAsRead", async ({ chatId, userId }) => {
+  socket.on("markAsRead", async ({ chatId, userId } = {}) => {
     if (!isValidObjectId(chatId) || !isValidObjectId(userId)) return;
+    if (userId !== socket.user._id.toString()) return;
 
     try {
       await Chat.updateMany(
-        { _id: chatId },
+        { _id: chatId, participants: socket.user._id },
         { $addToSet: { "messages.$[].readBy": userId } }
       );
     } catch (error) {
@@ -799,12 +972,12 @@ io.on("connection", (socket) => {
     io.emit("updateUnreadCounts");
   });
   // Clear all messages by chatId
-  socket.on("clearMessages", async ({ chatId }) => {
+  socket.on("clearMessages", async ({ chatId } = {}) => {
     if (!isValidObjectId(chatId)) return;
 
     try {
       await Chat.updateOne(
-        { _id: chatId }, // Match the chat by chatId
+        { _id: chatId, participants: socket.user._id }, // Only participants can clear a chat
         { $set: { messages: [] } } // Set the messages array to an empty array
       );
     } catch (error) {
@@ -835,9 +1008,44 @@ io.on("connection", (socket) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+app.get("/health", (req, res) => {
+  const databaseReady = mongoose.connection.readyState === 1;
+  res.status(databaseReady ? 200 : 503).json({
+    status: databaseReady ? "ok" : "degraded",
+    database: databaseReady ? "connected" : "disconnected",
+  });
 });
+
+app.use((error, req, res, next) => {
+  if (res.headersSent) return next(error);
+  console.error("Unhandled request error:", error);
+  res.status(error.statusCode || 500).json({
+    message: error.statusCode ? error.message : "Internal server error",
+  });
+});
+
+const startServer = async () => {
+  await mongoose.connect(mongoUri);
+  console.log("Connected to MongoDB");
+
+  server.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+  });
+};
+
+startServer().catch((error) => {
+  console.error("Unable to start backend:", error.message);
+  process.exitCode = 1;
+});
+
+const shutdown = async (signal) => {
+  console.log(`${signal} received, shutting down`);
+  await mongoose.disconnect();
+  server.close(() => process.exit(0));
+};
+
+process.once("SIGINT", () => shutdown("SIGINT"));
+process.once("SIGTERM", () => shutdown("SIGTERM"));
 
 // Endpoint to add interests //ONLY AS A ADMIN IF I WANT TO ADD ANY NEW INTEREST TO THE DB
 // app.post("/add-interest", async (req, res) => {

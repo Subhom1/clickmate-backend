@@ -2,9 +2,9 @@ import mongoose from "mongoose";
 
 const UserDetailSchema = new mongoose.Schema(
   {
-    fullname: { type: String, required: true },
-    email: { type: String, required: true, unique: true },
-    bio: { type: String, default: "No Bio" },
+    fullname: { type: String, required: true, trim: true, maxlength: 120 },
+    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    bio: { type: String, default: "No Bio", maxlength: 2000 },
     birthdate: {
       type: Date,
       required: false,

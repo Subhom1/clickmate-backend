@@ -1,4 +1,5 @@
-import admin from "firebase-admin";
+import { cert, initializeApp } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
 import { readFile } from "fs/promises";
 
 const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
@@ -13,8 +14,12 @@ const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
       )
     );
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
+const firebaseApp = initializeApp({
+  credential: cert(serviceAccount),
 });
+
+const admin = {
+  auth: () => getAuth(firebaseApp),
+};
 
 export default admin;
