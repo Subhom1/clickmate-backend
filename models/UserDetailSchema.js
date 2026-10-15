@@ -4,6 +4,7 @@ const UserDetailSchema = new mongoose.Schema(
   {
     fullname: { type: String, required: true, trim: true, maxlength: 120 },
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    firebaseUid: { type: String, unique: true, sparse: true, immutable: true },
     bio: { type: String, default: "No Bio", maxlength: 2000 },
     birthdate: {
       type: Date,

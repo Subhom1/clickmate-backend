@@ -13,9 +13,14 @@ import multer from "multer";
 import path from "path";
 import { randomUUID } from "crypto";
 import { existsSync, readFileSync } from "fs";
+import { unlink } from "fs/promises";
+import { createInterface } from "readline";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import { fileTypeFromFile } from "file-type";
+import { createAdapter } from "@socket.io/mongo-adapter";
 // Initialize Express app
 const app = express();
-const PORT = process.env.PORT || 5051;
 
 const loadLocalEnv = () => {
   if (!existsSync(".env")) return;
@@ -38,6 +43,7 @@ const loadLocalEnv = () => {
 
 loadLocalEnv();
 
+const PORT = process.env.PORT || 5051;
 const mongoUri = process.env.MONGODB_URI;
 const allowedOrigins = process.env.CORS_ORIGIN?.split(",").map((origin) =>
   origin.trim()
@@ -85,9 +91,15 @@ const loadAuthenticatedUser = async (req, res, next) => {
         .json({ message: "Authenticated email is required" });
     }
 
-    const user = await UserDetail.findOne({ email });
+    let user = await UserDetail.findOne({ firebaseUid: req.auth.uid });
+    if (!user) user = await UserDetail.findOne({ email });
     if (!user) {
       return res.status(403).json({ message: "User profile not found" });
+    }
+
+    if (!user.firebaseUid) {
+      await UserDetail.updateOne({ _id: user._id }, { $set: { firebaseUid: req.auth.uid } });
+      user.firebaseUid = req.auth.uid;
     }
 
     req.user = user;
@@ -112,6 +124,15 @@ const requireAdmin = (req, res, next) => {
 };
 
 // Middleware
+app.use(helmet());
+app.use(rateLimit({
+  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000),
+  limit: Number(process.env.RATE_LIMIT_MAX || 300),
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip: (req) => req.path === "/health",
+  message: { message: "Too many requests, please try again later" },
+}));
 app.use(express.json({ limit: "100kb" }));
 app.use(express.static("./public")); // To serve images statically
 app.use(
@@ -131,12 +152,12 @@ const io = new socketIo(server, {
 });
 
 // To register a user
-app.post("/register", async (req, res) => {
+app.post("/register", authenticate, async (req, res) => {
   const { name, email } = req.body;
-  const normalizedEmail = normalizeEmail(email);
+  const normalizedEmail = normalizeEmail(req.auth.email);
   const normalizedName = typeof name === "string" ? name.trim() : "";
 
-  if (!normalizedName || !normalizedEmail) {
+  if (!normalizedName || !normalizedEmail || (email && normalizeEmail(email) !== normalizedEmail)) {
     return res.status(400).send({ data: "Name and email are required" });
   }
 
@@ -147,6 +168,7 @@ app.post("/register", async (req, res) => {
     const newUser = await UserDetail.create({
       fullname: normalizedName.toLowerCase(),
       email: normalizedEmail,
+      firebaseUid: req.auth.uid,
       created_at: new Date(),
       updated_at: new Date(),
     });
@@ -312,45 +334,60 @@ app.get("/interests", async (req, res) => {
 });
 
 const ongoingSearches = new Map();
-const matchList = new Map();
+const userRoom = (userId) => `user:${userId}`;
 
 const searchTimeoutDuration = 30000; // 30 seconds
 const checkInterval = 1000; // 1 second
 const minimumSimilarityScore = 0.5;
 
-const runPythonScript = async (text1, text2) => {
-  return new Promise((resolve, reject) => {
-    const childProcess = spawn(process.env.PYTHON_BIN || "python3", [
-      "scripts/calculate_similarity.py",
-      text1,
-      text2,
-    ]);
+let similarityWorker;
+let similarityWorkerReady;
+const pendingSimilarity = new Map();
 
-    let result = "";
-    let error = "";
-
-    childProcess.stdout.on("data", (data) => {
-      result += data.toString();
-    });
-
-    childProcess.stderr.on("data", (data) => {
-      error += data.toString();
-    });
-
-    childProcess.on("close", (code) => {
-      if (code === 0) {
-        try {
-          const jsonResult = JSON.parse(result);
-          resolve(jsonResult);
-        } catch (parseError) {
-          reject(`Invalid JSON output: ${result}`);
-        }
-      } else {
-        reject(`Error: ${error}`);
+const startSimilarityWorker = () => new Promise((resolve, reject) => {
+  similarityWorker = spawn(process.env.PYTHON_BIN || "python3", ["scripts/similarity_worker.py"], { stdio: ["pipe", "pipe", "pipe"] });
+  const lines = createInterface({ input: similarityWorker.stdout });
+  const timeout = setTimeout(() => reject(new Error("Similarity worker startup timed out")), 120000);
+  lines.on("line", (line) => {
+    try {
+      const result = JSON.parse(line);
+      if (result.ready) {
+        clearTimeout(timeout);
+        similarityWorkerReady = true;
+        resolve();
+        return;
       }
+      const pending = pendingSimilarity.get(result.id);
+      if (!pending) return;
+      pendingSimilarity.delete(result.id);
+      result.error ? pending.reject(new Error(result.error)) : pending.resolve(result);
+    } catch (error) {
+      console.error("Invalid similarity worker output", error.message);
+    }
+  });
+  similarityWorker.stderr.on("data", (data) => console.error("Similarity worker:", data.toString().trim()));
+  similarityWorker.once("error", (error) => { clearTimeout(timeout); reject(error); });
+  similarityWorker.once("exit", (code) => {
+    for (const pending of pendingSimilarity.values()) pending.reject(new Error("Similarity worker stopped"));
+    pendingSimilarity.clear();
+    if (code && !similarityWorkerReady) reject(new Error(`Similarity worker exited with code ${code}`));
+  });
+});
+
+const runPythonScript = async (text1, text2) => {
+  if (!similarityWorkerReady) throw new Error("Similarity worker is not ready");
+  const id = randomUUID();
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => { pendingSimilarity.delete(id); reject(new Error("Similarity calculation timed out")); }, 15000);
+    pendingSimilarity.set(id, {
+      resolve: (result) => { clearTimeout(timeout); resolve(result); },
+      reject: (error) => { clearTimeout(timeout); reject(error); },
     });
+    similarityWorker.stdin.write(`${JSON.stringify({ id, text1, text2 })}\n`);
   });
 };
+
+const stopSimilarityWorker = () => similarityWorker?.kill("SIGTERM");
 
 const lockUser = async (userId) => {
   const user = await UserSearch.findOneAndUpdate(
@@ -374,15 +411,6 @@ const cleanupSearch = async (userId) => {
   await UserSearch.deleteOne({ userId });
   await unlockUser(userId);
   ongoingSearches.delete(userId);
-};
-
-const clearMatch = (userId) => {
-  const partnerId = matchList.get(userId)?.match;
-  matchList.delete(userId);
-  if (partnerId) {
-    matchList.delete(partnerId);
-  }
-  return partnerId;
 };
 
 const lockMatchPair = async (userId, otherUserId) => {
@@ -423,7 +451,7 @@ const findMatch = (userId, query, socket) => {
   const maxAttempts = searchTimeoutDuration / checkInterval;
 
   const checkForMatches = async () => {
-    if (matchList.has(userId) || cancelled) return;
+    if (cancelled) return;
     attempts++;
     try {
       const allOtherQueries = await UserSearch.find({
@@ -443,10 +471,6 @@ const findMatch = (userId, query, socket) => {
       for (let q of allOtherQueries) {
         // Looping through all the queries and running the python script
         const otherUserId = q.userId.toString();
-        const isMatchExist = matchList.has(otherUserId);
-        if (isMatchExist) continue;
-        if (!ongoingSearches.has(otherUserId)) continue;
-
         try {
           const candidateTimestamp = q.created_at
             ? new Date(q.created_at).getTime()
@@ -474,47 +498,29 @@ const findMatch = (userId, query, socket) => {
       if (
         bestMatch &&
         highestSimilarity >= minimumSimilarityScore &&
-        !matchList.has(bestMatch) &&
-        !matchList.has(userId) &&
         !cancelled
       ) {
-        const matchedSocket = ongoingSearches.get(bestMatch)?.socket;
-        const selfSocket = ongoingSearches.get(userId)?.socket;
-
-        if (!matchedSocket || !selfSocket) {
-          await cleanupSearch(bestMatch);
-          scheduleNextCheck();
-          return;
-        }
-
         const locked = await lockMatchPair(userId, bestMatch);
         if (!locked) {
           scheduleNextCheck();
           return;
         }
 
-        if (selfSocket) {
-          matchedSocket?.emit("search_update", {
+        io.to(userRoom(bestMatch)).emit("search_update", {
             matches: {
               user: await UserDetail.findOne({ _id: userId }),
               similarity: highestSimilarity,
             },
-
             message: "Search result found",
-          });
-        }
-        if (matchedSocket) {
-          selfSocket?.emit("search_update", {
+        });
+        io.to(userRoom(userId)).emit("search_update", {
             matches: {
               user: await UserDetail.findOne({ _id: bestMatch }),
               similarity: highestSimilarity,
             },
-
             message: "Search result found",
-          });
-        }
-        matchList.set(userId, { match: bestMatch });
-        matchList.set(bestMatch, { match: userId });
+            message: "Search result found",
+        });
         await UserSearch.deleteOne({ userId });
         await UserSearch.deleteOne({ userId: bestMatch });
         ongoingSearches.delete(userId);
@@ -529,12 +535,12 @@ const findMatch = (userId, query, socket) => {
         scheduleNextCheck();
       } else {
         if (cancelled) {
-          socket.emit("search_update", {
+          io.to(userRoom(userId)).emit("search_update", {
             cancel: true,
             message: "Search has been cancelled",
           });
         } else {
-          socket.emit("search_update", {
+          io.to(userRoom(userId)).emit("search_update", {
             matches: null,
             message: "No result found",
           });
@@ -543,16 +549,12 @@ const findMatch = (userId, query, socket) => {
         await unlockUser(userId);
         ongoingSearches.delete(userId);
         console.log(
-          "Timeout reached, no match found",
-          "matchList:",
-          matchList,
-          "ongoingSearches:",
-          ongoingSearches
+          "Timeout reached, no match found"
         );
       }
     } catch (err) {
       console.error("Error during match checking:", err);
-      socket.emit("error", {
+      io.to(userRoom(userId)).emit("error", {
         message: "An error occurred while checking for matches.",
       });
       await unlockUser(userId);
@@ -580,14 +582,17 @@ app.post("/create-chat", authenticate, loadAuthenticatedUser, async (req, res) =
       return res.status(403).json({ message: "You must be a chat participant" });
     }
     // Guard clause: Check if a chat thread already exists between the two users
+    const key = [user1Id, user2Id].sort().join(":");
     const existingChat = await Chat.findOne({
-      participants: { $all: [user1Id, user2Id] },
+      $or: [{ conversationKey: key }, { participants: { $all: [user1Id, user2Id] } }],
     });
     if (existingChat) {
+      if (!existingChat.conversationKey) await Chat.updateOne({ _id: existingChat._id }, { $set: { conversationKey: key } });
       return res.status(200).json(existingChat); // Return the existing chat thread
     }
     // Create a new chat thread if no existing thread is found
     const newChat = new Chat({
+      conversationKey: key,
       participants: [user1Id, user2Id],
       messages: [],
     });
@@ -712,11 +717,25 @@ const upload = multer({
       );
     },
   }),
-  limits: { fileSize: 5000000 }, // 5MB file size limit
+  limits: { fileSize: 5000000, files: 10, fields: 20, fieldSize: 100000 },
   fileFilter: function (req, file, cb) {
     checkFileType(file, cb);
   },
 }).array("images", 10); // 'image' is the name of our file input field  // Accept up to 10 images
+
+const removeUploadedFiles = async (files = []) => {
+  await Promise.all(files.map((file) => unlink(file.path).catch(() => undefined)));
+};
+
+const validateUploadedSignatures = async (files) => {
+  const allowed = new Set(["image/jpeg", "image/png", "image/gif"]);
+  for (const file of files) {
+    const detected = await fileTypeFromFile(file.path);
+    if (!detected || !allowed.has(detected.mime) || detected.mime !== file.mimetype) {
+      throw new Error("Uploaded file content does not match an allowed image type");
+    }
+  }
+};
 
 // Check File Type
 function checkFileType(file, cb) {
@@ -755,6 +774,7 @@ app.post(
   }
 
   try {
+    await validateUploadedSignatures(files || []);
     const parsedItems = JSON.parse(items);
     if (!Array.isArray(parsedItems)) {
       return res.status(400).send({ message: "Items must be an array." });
@@ -789,8 +809,9 @@ app.post(
 
     res.status(200).json(updatedExplore);
   } catch (error) {
+    await removeUploadedFiles(files);
     console.error("Error adding items:", error);
-    res.status(400).send({ message: error.message });
+    res.status(400).send({ message: "Unable to add items" });
   }
   }
 );
@@ -841,7 +862,9 @@ io.use(async (socket, next) => {
   try {
     const auth = await admin.auth().verifyIdToken(token);
     const email = normalizeEmail(auth.email);
-    const user = email ? await UserDetail.findOne({ email }) : null;
+    const user = auth.uid
+      ? await UserDetail.findOne({ $or: [{ firebaseUid: auth.uid }, { email }] })
+      : null;
     if (!user) {
       return next(new Error("User profile not found"));
     }
@@ -857,7 +880,21 @@ io.use(async (socket, next) => {
 
 io.on("connection", (socket) => {
   console.log("New WebSocket connection", socket.id);
+  socket.join(userRoom(socket.user._id.toString()));
+  const eventAllowed = (name, max, windowMs = 60000) => {
+    const now = Date.now();
+    const state = socket.data.limits || (socket.data.limits = {});
+    const entry = state[name] || { started: now, count: 0 };
+    if (now - entry.started >= windowMs) {
+      entry.started = now;
+      entry.count = 0;
+    }
+    entry.count += 1;
+    state[name] = entry;
+    return entry.count <= max;
+  };
   socket.on("submit_keyword", async ({ userId, query } = {}) => {
+    if (!eventAllowed("search", 10)) return socket.emit("error", { message: "Too many searches; try again later." });
     const normalizedQuery = normalizeSearchQuery(query);
     const authenticatedUserId = socket.user._id.toString();
 
@@ -876,10 +913,6 @@ io.on("connection", (socket) => {
     if (normalizedQuery.length > 500) {
       socket.emit("error", { message: "Search query is too long." });
       return;
-    }
-
-    if (matchList.has(userId)) {
-      clearMatch(userId);
     }
 
     try {
@@ -902,16 +935,6 @@ io.on("connection", (socket) => {
     if (!isValidObjectId(userId)) return;
 
     await cleanupSearch(userId);
-    if (matchList.has(userId)) {
-      const partnerId = clearMatch(userId);
-      if (partnerId) {
-        await unlockUser(partnerId);
-      }
-      ongoingSearches.get(partnerId)?.socket?.emit("search_update", {
-        matches: null,
-        message: "No partner found",
-      });
-    }
   });
   socket.on("joinChat", async ({ chatId } = {}) => {
     if (!isValidObjectId(chatId)) return;
@@ -929,6 +952,7 @@ io.on("connection", (socket) => {
   });
   // When a message is sent
   socket.on("sendMessage", async ({ chatId, message } = {}) => {
+    if (!eventAllowed("message", 60)) return;
     if (!chatId || !message || !isValidObjectId(chatId)) return;
     if (!isValidObjectId(message.sender) || !message.content?.trim()) return;
     if (message.sender !== socket.user._id.toString()) return;
@@ -994,15 +1018,7 @@ io.on("connection", (socket) => {
     );
     await Promise.all(
       disconnectedSearches.map(async ([userId]) => {
-        const partnerId = clearMatch(userId);
         await cleanupSearch(userId);
-        if (partnerId) {
-          await unlockUser(partnerId);
-          ongoingSearches.get(partnerId)?.socket?.emit("search_update", {
-            matches: null,
-            message: "No partner found",
-          });
-        }
       })
     );
   });
@@ -1019,6 +1035,12 @@ app.get("/health", (req, res) => {
 app.use((error, req, res, next) => {
   if (res.headersSent) return next(error);
   console.error("Unhandled request error:", error);
+  if (error.code?.startsWith?.("LIMIT_")) {
+    return res.status(400).json({ message: "Upload exceeds the allowed limits" });
+  }
+  if (error.message?.includes("Only JPEG") || error.message?.includes("image type")) {
+    return res.status(400).json({ message: "Only valid JPEG, PNG, and GIF images are allowed" });
+  }
   res.status(error.statusCode || 500).json({
     message: error.statusCode ? error.message : "Internal server error",
   });
@@ -1027,6 +1049,16 @@ app.use((error, req, res, next) => {
 const startServer = async () => {
   await mongoose.connect(mongoUri);
   console.log("Connected to MongoDB");
+
+  if (process.env.SOCKET_ADAPTER_ENABLED !== "false") {
+    const adapterCollection = mongoose.connection.getClient().db().collection("socket.io-adapter-events");
+    await adapterCollection.createIndex({ createdAt: 1 }, { expireAfterSeconds: 3600 });
+    io.adapter(createAdapter(adapterCollection, { addCreatedAtField: true }));
+    console.log("Socket.IO Mongo adapter enabled");
+  }
+
+  await startSimilarityWorker();
+  console.log("Similarity worker ready");
 
   server.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
@@ -1040,8 +1072,10 @@ startServer().catch((error) => {
 
 const shutdown = async (signal) => {
   console.log(`${signal} received, shutting down`);
+  stopSimilarityWorker();
+  await new Promise((resolve) => server.close(resolve));
   await mongoose.disconnect();
-  server.close(() => process.exit(0));
+  process.exit(0);
 };
 
 process.once("SIGINT", () => shutdown("SIGINT"));

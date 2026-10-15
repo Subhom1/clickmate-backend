@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 
 const chatSchema = new mongoose.Schema(
   {
+    conversationKey: { type: String, unique: true, sparse: true, index: true },
     participants: {
       type: [mongoose.Schema.Types.ObjectId],
       ref: "user",

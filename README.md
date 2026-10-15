@@ -1,10 +1,12 @@
 # ClickMate Backend
 
-ClickMate Backend is a Express server app to provide APIs for the ClickMate app
+ClickMate Backend is an Express and Socket.IO service for the ClickMate app.
+
+The full production architecture, security model, socket-room rules, deployment configuration, and verification checklist are documented in [PRODUCTION_BACKEND.md](PRODUCTION_BACKEND.md).
 
 ## Instruction to run the program
 
-Node version required: v21.4.0
+Use the repository's supported Node.js runtime (Node 21.4.0 or a compatible newer LTS release).
 
 
 Visit the Node.js official website.
