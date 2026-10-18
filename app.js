@@ -519,7 +519,6 @@ const findMatch = (userId, query, socket) => {
               similarity: highestSimilarity,
             },
             message: "Search result found",
-            message: "Search result found",
         });
         await UserSearch.deleteOne({ userId });
         await UserSearch.deleteOne({ userId: bestMatch });
@@ -1032,8 +1031,15 @@ app.get("/health", (req, res) => {
   });
 });
 
-app.use((error, req, res, next) => {
+app.use(async (error, req, res, next) => {
   if (res.headersSent) return next(error);
+
+  // Multer can write earlier files before rejecting a later file or upload
+  // limit. The route handler is skipped in that case, so clean up here too.
+  if (req.files?.length) {
+    await removeUploadedFiles(req.files);
+  }
+
   console.error("Unhandled request error:", error);
   if (error.code?.startsWith?.("LIMIT_")) {
     return res.status(400).json({ message: "Upload exceeds the allowed limits" });
