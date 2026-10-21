@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node app.js",
     "dev": "nodemon app.js",
-    "check": "node --check app.js && node --check FirebaseAdmin.js",
+    "check": "find . -path './node_modules' -prune -o -name '*.js' -print0 | xargs -0 -n1 node --check",
     "test": "npm run check"
   },
   "author": "",

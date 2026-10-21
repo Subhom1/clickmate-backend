@@ -11,6 +11,16 @@ The service consists of:
 - **MongoDB/Mongoose** for users, interests, explore categories, chats, and active searches.
 - **Python similarity worker** for sentence-transformer comparisons. The model is loaded once at startup and receives newline-delimited JSON requests from Node.js.
 
+The application is organized by responsibility:
+
+- `app.js` bootstraps Express, Socket.IO, middleware, routes, and graceful shutdown.
+- `config/` contains environment and MongoDB lifecycle configuration.
+- `middleware/` contains authentication, authorization, and upload validation.
+- `routes/` contains the user, content, and chat HTTP APIs. Route paths and response contracts remain unchanged.
+- `services/` contains reusable chat persistence, similarity-worker, and matchmaking logic.
+- `sockets/` contains authenticated Socket.IO event registration.
+- `utils/` contains shared validation and normalization helpers.
+
 The server waits for MongoDB, the optional Socket.IO Mongo adapter, and the similarity worker before listening.
 
 ## Requirements
