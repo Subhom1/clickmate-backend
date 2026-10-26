@@ -1,10 +1,15 @@
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
-import {
-  authenticate,
-  requireAdmin,
-  requireOwnUser,
-} from "../../../middleware/auth.js";
+
+let verifyToken = async () => ({});
+mock.module(new URL("../../../FirebaseAdmin.js", import.meta.url), {
+  defaultExport: {
+    auth: () => ({ verifyIdToken: (...args) => verifyToken(...args) }),
+  },
+});
+
+const { authenticate, requireAdmin, requireOwnUser } =
+  await import("../../../middleware/auth.js");
 
 const responseRecorder = () => ({
   statusCode: 200,
@@ -37,6 +42,18 @@ test("authenticate returns 401 when the authorization scheme is not Bearer", asy
 
   assert.equal(res.statusCode, 401);
   assert.deepEqual(res.payload, { message: "Authentication required" });
+});
+
+test("authenticate verifies a Bearer token and attaches its claims", async () => {
+  verifyToken = async (token) => ({ uid: "firebase-user", token });
+  const req = { get: () => "Bearer valid-token" };
+  const res = responseRecorder();
+  let nextCalled = false;
+
+  await authenticate(req, res, () => { nextCalled = true; });
+
+  assert.deepEqual(req.auth, { uid: "firebase-user", token: "valid-token" });
+  assert.equal(nextCalled, true);
 });
 
 test("requireAdmin permits an admin claim", () => {
