@@ -2,11 +2,14 @@ import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 
 let verifyToken = async () => ({});
-mock.module(new URL("../../../FirebaseAdmin.js", import.meta.url), {
-  defaultExport: {
-    auth: () => ({ verifyIdToken: (...args) => verifyToken(...args) }),
-  },
-});
+const firebaseAdminMock = {
+  auth: () => ({ verifyIdToken: (...args) => verifyToken(...args) }),
+};
+const moduleMockOptions = Number(process.versions.node.split(".")[0]) >= 26
+  ? { exports: { default: firebaseAdminMock } }
+  : { defaultExport: firebaseAdminMock };
+
+mock.module(new URL("../../../FirebaseAdmin.js", import.meta.url), moduleMockOptions);
 
 const { authenticate, requireAdmin, requireOwnUser } =
   await import("../../../middleware/auth.js");
