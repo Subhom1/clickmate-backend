@@ -178,6 +178,27 @@ Every operation checks chat membership. Messages are limited to 5,000 characters
 
 ## Verification and troubleshooting
 
+### Backend test suite
+
+Tests are grouped by responsibility under `tests/unit/`: `config/`, `middleware/`, `routes/`, `services/`, `sockets/`, and `utils/`, with app bootstrap and health checks in `app.test.js`. Shared database helpers live in `tests/helpers/`. Most tests replace MongoDB, Firebase, worker processes, and Socket.IO dependencies with controlled mocks, so the default suite does not need application credentials, a running database, or a downloaded language model. The Python worker protocol tests launch the real worker with a temporary fake `sentence_transformers` module.
+
+Run the full test suite and JavaScript syntax check:
+
+```bash
+npm test
+```
+
+Run a focused file or the coverage report:
+
+```bash
+node --experimental-test-module-mocks --test tests/unit/routes/chatRoutes.test.js
+npm run test:coverage
+```
+
+The coverage command uses Node's built-in test coverage. CI includes all backend source files in its report; local Node versions that do not support include-all coverage may report only modules loaded by the tests. Review the per-file report and uncovered lines before treating any percentage as whole-backend coverage.
+
+Tests that opt into the MongoDB helper must set `TEST_MONGODB_URI` to a dedicated database whose name contains `test`; the helper refuses an unmarked database name. Keep test records and credentials separate from development and production data.
+
 ```bash
 npm test
 git diff --check

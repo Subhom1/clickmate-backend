@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 
-const calls = { findOne: [], create: [], findById: [], findByIdAndUpdate: [], deleteOne: [] };
+const calls = { findOne: [], create: [], findById: [], findByIdAndUpdate: [], deleteOne: [], firebaseDelete: [] };
 let findOneResult;
 let createResult;
 let findByIdResult;
@@ -18,7 +18,7 @@ const userModelMock = {
   deleteOne: async (...args) => { calls.deleteOne.push(args); return deleteOneResult; },
 };
 const authMock = {
-  admin: { auth: () => ({ deleteUser: async () => {} }) },
+  admin: { auth: () => ({ deleteUser: async (...args) => { calls.firebaseDelete.push(args); } }) },
   authenticate(_req, _res, next) { next(); },
   loadAuthenticatedUser(_req, _res, next) { next(); },
   requireOwnUser(_req, _res, next) { next(); },
@@ -110,4 +110,64 @@ test("friends route rejects malformed user IDs before querying the database", as
   assert.equal(res.statusCode, 400);
   assert.deepEqual(res.payload, { message: "Invalid user ID" });
   assert.equal(calls.findById.length, 0);
+});
+
+test("friends route returns the authenticated user's populated friend list", async () => {
+  const friends = [{ fullname: "Bob", email: "bob@example.com" }];
+  findByIdResult = { friends };
+  const res = await invoke("/users/:userId/friends", "get", { params: { userId: "0123456789abcdef01234567" } });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.payload, friends);
+  assert.deepEqual(calls.findById[0], ["0123456789abcdef01234567"]);
+});
+
+test("profile updates validate IDs before writing", async () => {
+  const res = await invoke("/user/:userId", "patch", { params: { userId: "bad-id" }, body: {} });
+  assert.equal(res.statusCode, 400);
+  assert.deepEqual(res.payload, { message: "Invalid user ID" });
+  assert.equal(calls.findByIdAndUpdate.length, 0);
+});
+
+test("profile updates normalize an empty bio and persist only supplied fields", async () => {
+  const id = "0123456789abcdef01234567";
+  const interests = ["interest-1"];
+  const updated = { _id: id, fullname: "Alice", bio: "No Bio", interests };
+  findByIdAndUpdateResult = updated;
+  const res = await invoke("/user/:userId", "patch", {
+    params: { userId: id }, body: { fullname: "Alice", bio: "", interests, ignored: true },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.payload, updated);
+  const [filter, update, options] = calls.findByIdAndUpdate[0];
+  assert.equal(filter, id);
+  assert.equal(update.fullname, "Alice");
+  assert.equal(update.bio, "No Bio");
+  assert.deepEqual(update.interests, interests);
+  assert.equal(update.ignored, undefined);
+  assert.ok(update.updated_at instanceof Date);
+  assert.deepEqual(options, { new: true, runValidators: true });
+});
+
+test("profile updates return not found when the user no longer exists", async () => {
+  const res = await invoke("/user/:userId", "patch", { params: { userId: "0123456789abcdef01234567" }, body: {} });
+  assert.equal(res.statusCode, 404);
+  assert.deepEqual(res.payload, { message: "User not found" });
+});
+
+test("user deletion rejects attempts to delete another profile", async () => {
+  const id = "0123456789abcdef01234567";
+  const res = await invoke("/deleteUser/:uid/", "delete", { params: { uid: id }, user: { _id: { toString: () => "abcdef0123456789abcdef01" } }, auth: { uid: "firebase-uid" } });
+  assert.equal(res.statusCode, 403);
+  assert.deepEqual(res.payload, { message: "You can only delete your own user" });
+  assert.equal(calls.firebaseDelete.length, 0);
+  assert.equal(calls.deleteOne.length, 0);
+});
+
+test("user deletion removes the Firebase identity and profile", async () => {
+  const id = "0123456789abcdef01234567";
+  const res = await invoke("/deleteUser/:uid/", "delete", { params: { uid: id }, user: { _id: { toString: () => id } }, auth: { uid: "firebase-uid" } });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.payload, { message: "User deleted successfully from Firebase and MongoDB" });
+  assert.deepEqual(calls.firebaseDelete, [["firebase-uid"]]);
+  assert.deepEqual(calls.deleteOne, [[{ _id: id }]]);
 });
