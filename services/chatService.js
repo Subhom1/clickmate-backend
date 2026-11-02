@@ -5,7 +5,7 @@ export const saveMessage = async (chatId, message) => {
     return await Chat.findByIdAndUpdate(
       chatId,
       { $push: { messages: message } },
-      { new: true }
+      { new: true, runValidators: true }
     );
   } catch (error) {
     console.error(error.message);
