@@ -32,13 +32,13 @@ test("saveMessage appends the message with MongoDB $push", async () => {
   assert.deepEqual(receivedUpdate, { $push: { messages: message } });
 });
 
-test("saveMessage requests the updated chat document", async () => {
+test("saveMessage requests the updated chat document with schema validation", async () => {
   let receivedOptions;
   findByIdAndUpdate = async (_chatId, _update, options) => { receivedOptions = options; return {}; };
 
   await saveMessage("chat-1", { text: "hello" });
 
-  assert.deepEqual(receivedOptions, { new: true });
+  assert.deepEqual(receivedOptions, { new: true, runValidators: true });
 });
 
 test("saveMessage returns the updated chat document", async () => {

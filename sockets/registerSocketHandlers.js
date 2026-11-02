@@ -56,9 +56,10 @@ export const registerSocketHandlers = (io, searchService) => {
     });
     socket.on("leaveChat", ({ chatId } = {}) => { if (isValidObjectId(chatId)) socket.leave(chatId); });
     socket.on("sendMessage", async ({ chatId, message } = {}) => {
-      if (!eventAllowed("message", 60) || !chatId || !message || !isValidObjectId(chatId) || !isValidObjectId(message.sender) || !message.content?.trim() || message.sender !== socket.user._id.toString()) return;
+      const content = typeof message?.content === "string" ? message.content.trim() : "";
+      if (!eventAllowed("message", 60) || !chatId || !message || !isValidObjectId(chatId) || !isValidObjectId(message.sender) || !content || content.length > 5000 || message.sender !== socket.user._id.toString()) return;
       if (!await Chat.exists({ _id: chatId, participants: socket.user._id })) return;
-      const updatedChat = await saveMessage(chatId, { sender: message.sender, content: message.content.trim(), readBy: [message.sender] });
+      const updatedChat = await saveMessage(chatId, { sender: message.sender, content, readBy: [message.sender] });
       if (!updatedChat) return;
       io.to(chatId).emit("receiveMessage", updatedChat.messages[updatedChat.messages.length - 1]);
       io.emit("updateUnreadCounts");

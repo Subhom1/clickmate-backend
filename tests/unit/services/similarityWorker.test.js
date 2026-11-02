@@ -65,3 +65,22 @@ test("Python similarity worker reports a malformed request and continues process
   assert.match(frames[1].error, /text2/);
   assert.deepEqual(frames[2], { id: "good-request", similarity_score: 0.625 });
 });
+
+test("Python similarity worker reports invalid JSON and accepts the next request", async () => {
+  const result = await withFakeModel('{broken json\n{"id":"valid","text1":"left","text2":"right"}\n');
+  assert.equal(result.status, 0, result.stderr);
+  const frames = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(frames[0], { ready: true });
+  assert.equal(frames[1].id, null);
+  assert.match(frames[1].error, /JSON|property name/i);
+  assert.deepEqual(frames[2], { id: "valid", similarity_score: 0.625 });
+});
+
+test("Python similarity worker rejects a non-object JSON frame without stopping", async () => {
+  const result = await withFakeModel('42\n{"id":"valid","text1":"left","text2":"right"}\n');
+  assert.equal(result.status, 0, result.stderr);
+  const frames = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(frames[0], { ready: true });
+  assert.deepEqual(frames[1], { id: null, error: "Request must be a JSON object" });
+  assert.deepEqual(frames[2], { id: "valid", similarity_score: 0.625 });
+});

@@ -154,3 +154,71 @@ test("sendMessage ignores messages that claim a different sender", async () => {
   assert.equal(calls.savedMessages.length, 0);
   assert.equal(io.roomEvents.length, 0);
 });
+
+test("cancel_search cleans only the authenticated user's valid search", async () => {
+  const { socket } = await setupConnectedSocket();
+  await socket.handlers.cancel_search({ userId: chatId });
+  await socket.handlers.cancel_search({ userId: "invalid" });
+  assert.equal(calls.cleanups.length, 0);
+  await socket.handlers.cancel_search({ userId });
+  assert.deepEqual(calls.cleanups, [[userId]]);
+});
+
+test("leaveChat leaves a valid chat room and ignores a malformed ID", async () => {
+  const { socket } = await setupConnectedSocket();
+  socket.handlers.leaveChat({ chatId: "invalid" });
+  socket.handlers.leaveChat({ chatId });
+  assert.deepEqual(socket.left, [chatId]);
+});
+
+test("markAsRead updates only a participant's chat and refreshes unread counts", async () => {
+  const { io, socket } = await setupConnectedSocket();
+  await socket.handlers.markAsRead({ chatId, userId });
+  assert.deepEqual(calls.updates, [[
+    { _id: chatId, participants: socket.user._id },
+    { $addToSet: { "messages.$[].readBy": userId } },
+  ]]);
+  assert.deepEqual(io.outgoing, [{ event: "updateUnreadCounts", payload: undefined }]);
+});
+
+test("markAsRead ignores a different user's ID", async () => {
+  const { io, socket } = await setupConnectedSocket();
+  await socket.handlers.markAsRead({ chatId, userId: chatId });
+  assert.equal(calls.updates.length, 0);
+  assert.equal(io.outgoing.length, 0);
+});
+
+test("clearMessages clears only the participant's chat", async () => {
+  const { io, socket } = await setupConnectedSocket();
+  await socket.handlers.clearMessages({ chatId });
+  assert.deepEqual(calls.updates, [[
+    { _id: chatId, participants: socket.user._id },
+    { $set: { messages: [] } },
+  ]]);
+  assert.deepEqual(io.outgoing, [{ event: "messagesCleared", payload: undefined }]);
+});
+
+test("submit_keyword limits a socket to ten searches per window", async () => {
+  const { socket } = await setupConnectedSocket();
+  for (let attempt = 0; attempt < 11; attempt++) {
+    await socket.handlers.submit_keyword({ userId, query: "forest" });
+  }
+  assert.equal(calls.starts.length, 10);
+  assert.deepEqual(socket.emitted, [{ event: "error", payload: { message: "Too many searches; try again later." } }]);
+});
+
+test("sendMessage rejects messages beyond the schema limit and non-string content", async () => {
+  const { io, socket } = await setupConnectedSocket();
+  await socket.handlers.sendMessage({ chatId, message: { sender: userId, content: "x".repeat(5001) } });
+  await socket.handlers.sendMessage({ chatId, message: { sender: userId, content: { text: "bad" } } });
+  assert.equal(calls.chatExists.length, 0);
+  assert.equal(calls.savedMessages.length, 0);
+  assert.equal(io.roomEvents.length, 0);
+});
+
+test("sendMessage accepts content at the 5,000-character boundary", async () => {
+  const { socket } = await setupConnectedSocket();
+  await socket.handlers.sendMessage({ chatId, message: { sender: userId, content: "x".repeat(5000) } });
+  assert.equal(calls.savedMessages.length, 1);
+  assert.equal(calls.savedMessages[0][1].content.length, 5000);
+});
