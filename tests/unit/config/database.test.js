@@ -4,13 +4,13 @@ import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 
 const calls = { connects: [], disconnects: 0, indexes: [], adapters: [], adapterCreates: [] };
-const collection = { createIndex: async (...args) => { calls.indexes.push(args); } };
+const collection = { createIndex: async (...args) => { calls.indexes.push(args); if (calls.indexError) throw calls.indexError; } };
 const mongoose = {
   connection: {
     readyState: 0,
     getClient: () => ({ db: () => ({ collection: (name) => { calls.collectionName = name; return collection; } }) }),
   },
-  connect: async (...args) => { calls.connects.push(args); },
+  connect: async (...args) => { calls.connects.push(args); if (calls.connectError) throw calls.connectError; },
   disconnect: async () => { calls.disconnects++; return "disconnected"; },
 };
 const adapter = { createAdapter: (...args) => { calls.adapterCreates.push(args); return "mongo-adapter"; } };
@@ -28,6 +28,8 @@ beforeEach(() => {
   calls.adapters.length = 0;
   calls.adapterCreates.length = 0;
   calls.collectionName = undefined;
+  calls.connectError = undefined;
+  calls.indexError = undefined;
   mongoose.connection.readyState = 0;
 });
 
@@ -57,4 +59,24 @@ test("database readiness reflects Mongoose's connected state", () => {
 test("disconnectDatabase returns Mongoose's disconnect result", async () => {
   assert.equal(await disconnectDatabase(), "disconnected");
   assert.equal(calls.disconnects, 1);
+});
+
+test("database connection propagates a MongoDB connection failure without installing an adapter", async () => {
+  calls.connectError = new Error("database unavailable");
+  const io = { adapter: (value) => calls.adapters.push(value) };
+
+  await assert.rejects(connectDatabase("mongodb://localhost/failure", io, true), /database unavailable/);
+  assert.equal(calls.indexes.length, 0);
+  assert.equal(calls.adapterCreates.length, 0);
+  assert.equal(calls.adapters.length, 0);
+});
+
+test("adapter index failure stops adapter installation and propagates the error", async () => {
+  calls.indexError = new Error("index unavailable");
+  const io = { adapter: (value) => calls.adapters.push(value) };
+
+  await assert.rejects(connectDatabase("mongodb://localhost/failure", io, true), /index unavailable/);
+  assert.equal(calls.indexes.length, 1);
+  assert.equal(calls.adapterCreates.length, 0);
+  assert.equal(calls.adapters.length, 0);
 });
