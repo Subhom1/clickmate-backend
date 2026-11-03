@@ -1,15 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 const envModuleUrl = new URL("../../../config/env.js", import.meta.url).href;
 
-const runConfigImport = async (variables) => {
+const runConfigImport = async (variables, localEnv) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "clickmate-env-test-"));
   try {
+    if (localEnv !== undefined) await writeFile(path.join(directory, ".env"), localEnv);
     const result = spawnSync(
       process.execPath,
       ["--input-type=module", "-e", `import(${JSON.stringify(envModuleUrl)}).then(({ config }) => console.log(JSON.stringify(config)))`],
@@ -32,6 +33,39 @@ test("configuration loads required MongoDB URI and default values", async () => 
   assert.equal(config.socketAdapterEnabled, true);
   assert.equal(config.rateLimitWindowMs, 900000);
   assert.equal(config.rateLimitMax, 300);
+});
+
+test("configuration reads quoted values from a local .env file", async () => {
+  const result = await runConfigImport({}, 'MONGODB_URI="mongodb://localhost/from-file"\nPYTHON_BIN=\'python-test\'\n');
+
+  assert.equal(result.status, 0, result.stderr);
+  const config = JSON.parse(result.stdout);
+  assert.equal(config.mongoUri, "mongodb://localhost/from-file");
+  assert.equal(config.pythonBin, "python-test");
+});
+
+test("process environment takes precedence over local .env values", async () => {
+  const result = await runConfigImport(
+    { MONGODB_URI: "mongodb://localhost/from-process", PORT: "6060" },
+    "MONGODB_URI=mongodb://localhost/from-file\nPORT=7000\n"
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const config = JSON.parse(result.stdout);
+  assert.equal(config.mongoUri, "mongodb://localhost/from-process");
+  assert.equal(config.port, "6060");
+});
+
+test("configuration skips comments, blank lines, and malformed .env entries", async () => {
+  const result = await runConfigImport(
+    {},
+    "# comment\n\nMALFORMED\n =ignored\n MONGODB_URI = mongodb://localhost/from-file \nCORS_ORIGIN= , https://one.example, \n"
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const config = JSON.parse(result.stdout);
+  assert.equal(config.mongoUri, "mongodb://localhost/from-file");
+  assert.deepEqual(config.allowedOrigins, ["https://one.example"]);
 });
 
 test("configuration parses comma-separated origins and numeric overrides", async () => {

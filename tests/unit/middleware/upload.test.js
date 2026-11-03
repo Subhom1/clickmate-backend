@@ -61,6 +61,32 @@ test("validateUploadedSignatures accepts an empty file list", async () => {
   await assert.doesNotReject(() => validateUploadedSignatures([]));
 });
 
+test("validateUploadedSignatures propagates an unreadable upload path", async () => {
+  await withTempDirectory(async (directory) => {
+    await assert.rejects(
+      validateUploadedSignatures([{ path: path.join(directory, "missing.png"), mimetype: "image/png" }]),
+      { code: "ENOENT" }
+    );
+  });
+});
+
+test("validateUploadedSignatures validates every file in a batch", async () => {
+  await withTempDirectory(async (directory) => {
+    const valid = path.join(directory, "valid.png");
+    const invalid = path.join(directory, "invalid.png");
+    await writeFile(valid, onePixelPng);
+    await writeFile(invalid, "not an image");
+
+    await assert.rejects(
+      validateUploadedSignatures([
+        { path: valid, mimetype: "image/png" },
+        { path: invalid, mimetype: "image/png" },
+      ]),
+      /content does not match/
+    );
+  });
+});
+
 test("removeUploadedFiles deletes each uploaded file", async () => {
   await withTempDirectory(async (directory) => {
     const filePath = path.join(directory, "uploaded.png");
