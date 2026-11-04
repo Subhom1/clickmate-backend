@@ -9,12 +9,13 @@ let createResult;
 let findByIdResult;
 let findByIdAndUpdateResult;
 let deleteOneResult;
-const queryFor = (value) => ({ populate() { return this; }, then(resolveValue, rejectValue) { return Promise.resolve(value).then(resolveValue, rejectValue); } });
+const failures = {};
+const queryFor = (value, failure) => ({ populate() { return this; }, then(resolveValue, rejectValue) { return (failure ? Promise.reject(failure) : Promise.resolve(value)).then(resolveValue, rejectValue); } });
 const userModelMock = {
-  findOne: (...args) => { calls.findOne.push(args); return queryFor(findOneResult); },
+  findOne: (...args) => { calls.findOne.push(args); return queryFor(findOneResult, failures.findOne); },
   create: async (...args) => { calls.create.push(args); return createResult; },
-  findById: (...args) => { calls.findById.push(args); return queryFor(findByIdResult); },
-  findByIdAndUpdate: (...args) => { calls.findByIdAndUpdate.push(args); return queryFor(findByIdAndUpdateResult); },
+  findById: (...args) => { calls.findById.push(args); return queryFor(findByIdResult, failures.findById); },
+  findByIdAndUpdate: (...args) => { calls.findByIdAndUpdate.push(args); return queryFor(findByIdAndUpdateResult, failures.update); },
   deleteOne: async (...args) => { calls.deleteOne.push(args); return deleteOneResult; },
 };
 const authMock = {
@@ -54,6 +55,7 @@ beforeEach(() => {
   findByIdResult = null;
   findByIdAndUpdateResult = null;
   deleteOneResult = { deletedCount: 1 };
+  for (const key of Object.keys(failures)) delete failures[key];
 });
 
 test("registration rejects a missing name before querying the database", async () => {
@@ -170,4 +172,56 @@ test("user deletion removes the Firebase identity and profile", async () => {
   assert.deepEqual(res.payload, { message: "User deleted successfully from Firebase and MongoDB" });
   assert.deepEqual(calls.firebaseDelete, [["firebase-uid"]]);
   assert.deepEqual(calls.deleteOne, [[{ _id: id }]]);
+});
+
+test("registration reports a database lookup failure without creating a profile", async () => {
+  failures.findOne = new Error("lookup unavailable");
+  const res = await invoke("/register", "post", { body: { name: "Alice" }, auth: { email: "alice@example.com", uid: "firebase-uid" } });
+  assert.equal(res.statusCode, 500);
+  assert.deepEqual(res.payload, { status: "error", data: "lookup unavailable" });
+  assert.equal(calls.create.length, 0);
+});
+
+test("user lookup returns the authenticated user's populated profile", async () => {
+  const profile = { _id: "profile-1", email: "alice@example.com" };
+  findOneResult = profile;
+  const res = await invoke("/user/:email", "get", { params: { email: "ALICE@example.com" }, auth: { email: "alice@example.com" } });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.payload, profile);
+});
+
+test("user lookup hides database errors from the response", async () => {
+  failures.findOne = new Error("private database detail");
+  const res = await invoke("/user/:email", "get", { params: { email: "alice@example.com" }, auth: { email: "alice@example.com" } });
+  assert.equal(res.statusCode, 500);
+  assert.deepEqual(res.payload, { message: "Unable to fetch user" });
+});
+
+test("friends route returns not found for a deleted profile", async () => {
+  const res = await invoke("/users/:userId/friends", "get", { params: { userId: "0123456789abcdef01234567" } });
+  assert.equal(res.statusCode, 404);
+  assert.deepEqual(res.payload, { message: "User not found" });
+});
+
+test("friends route hides database errors from the response", async () => {
+  failures.findById = new Error("private database detail");
+  const res = await invoke("/users/:userId/friends", "get", { params: { userId: "0123456789abcdef01234567" } });
+  assert.equal(res.statusCode, 500);
+  assert.deepEqual(res.payload, { message: "Unable to fetch friends" });
+});
+
+test("profile update hides database errors from the response", async () => {
+  failures.update = new Error("private database detail");
+  const res = await invoke("/user/:userId", "patch", { params: { userId: "0123456789abcdef01234567" }, body: { bio: "hello" } });
+  assert.equal(res.statusCode, 500);
+  assert.deepEqual(res.payload, { message: "Unable to update user" });
+});
+
+test("user deletion reports a missing MongoDB profile after Firebase deletion", async () => {
+  const id = "0123456789abcdef01234567";
+  deleteOneResult = { deletedCount: 0 };
+  const res = await invoke("/deleteUser/:uid/", "delete", { params: { uid: id }, user: { _id: { toString: () => id } }, auth: { uid: "firebase-uid" } });
+  assert.equal(res.statusCode, 404);
+  assert.deepEqual(res.payload, { message: "User not found in MongoDB" });
+  assert.deepEqual(calls.firebaseDelete, [["firebase-uid"]]);
 });
