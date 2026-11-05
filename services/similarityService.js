@@ -44,6 +44,8 @@ export const createSimilarityService = (pythonBin) => {
       reject(error);
     });
     worker.once("exit", (code) => {
+      clearTimeout(timeout);
+      ready = false;
       for (const request of pending.values()) {
         request.reject(new Error("Similarity worker stopped"));
       }

@@ -86,3 +86,52 @@ test("stop sends SIGTERM to the worker process", async () => {
   service.stop();
   assert.equal(child.killedWith, "SIGTERM");
 });
+
+test("startup rejects when the Python worker exits before readiness", async () => {
+  const service = createSimilarityService("python-test");
+  const starting = service.start();
+  child.emit("exit", 2);
+  await assert.rejects(starting, /exited with code 2/);
+});
+
+test("startup propagates a worker spawn error", async () => {
+  const service = createSimilarityService("python-test");
+  const starting = service.start();
+  child.emit("error", new Error("python executable unavailable"));
+  await assert.rejects(starting, /python executable unavailable/);
+});
+
+test("unknown worker response IDs do not settle another comparison", async () => {
+  responseForRequest = () => null;
+  const service = createSimilarityService("python-test");
+  await startReadyWorker(service);
+  const pending = service.compare("left", "right");
+  const request = JSON.parse(child.stdin.writes[0]);
+  child.stdout.write('{"id":"unknown","similarity_score":1}\n');
+  child.stdout.write(`${JSON.stringify({ id: request.id, similarity_score: 0.4 })}\n`);
+  assert.equal((await pending).similarity_score, 0.4);
+});
+
+test("invalid worker output does not stop later valid comparisons", async () => {
+  responseForRequest = () => null;
+  const service = createSimilarityService("python-test");
+  await startReadyWorker(service);
+  const pending = service.compare("left", "right");
+  const request = JSON.parse(child.stdin.writes[0]);
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    child.stdout.write('invalid-json\n');
+    child.stdout.write(`${JSON.stringify({ id: request.id, similarity_score: 0.6 })}\n`);
+    assert.equal((await pending).similarity_score, 0.6);
+  } finally {
+    console.error = originalError;
+  }
+});
+
+test("worker exit makes later comparisons fail until restarted", async () => {
+  const service = createSimilarityService("python-test");
+  await startReadyWorker(service);
+  child.emit("exit", 1);
+  await assert.rejects(service.compare("left", "right"), /not ready/);
+});
