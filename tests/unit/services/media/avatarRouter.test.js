@@ -12,6 +12,15 @@ async function execute(router, req) {
   return res;
 }
 
+async function executePath(router, path, req) {
+  const stack = router.stack.find(layer => layer.route.path === path).route.stack;
+  const res = response();
+  let index = 0;
+  const next = () => stack[index++].handle(req, res, next);
+  await next();
+  return res;
+}
+
 test("authentication and profile loading precede session creation", async () => {
   const calls = [];
   const router = createAvatarRouter({
@@ -38,4 +47,22 @@ test("client errors are reported and internal errors are hidden", async () => {
     assert.equal(res.statusCode, expected);
     if (!statusCode) assert.equal(res.body.message, "Upload session unavailable");
   }
+});
+
+test("completion and profile routes use the authenticated owner", async () => {
+  const calls = [];
+  const router = createAvatarRouter({
+    authenticate: (_req, _res, next) => next(),
+    loadUser: (req, _res, next) => { req.user = { _id: "owner" }; return next(); },
+    complete: async (owner, id) => { calls.push(["complete", owner, id]); },
+    getProfile: async owner => { calls.push(["profile", owner]); return { avatar: { mediaId: "media" } }; },
+    remove: async owner => { calls.push(["remove", owner]); return { avatar: null }; },
+  });
+  const completed = await executePath(router, "/v1/me/avatar/uploads/:mediaId/complete", { params: { mediaId: "media" } });
+  assert.deepEqual(completed.body, { success: true, avatar: { mediaId: "media" } });
+  const profile = await executePath(router, "/v1/me/profile", {});
+  assert.equal(profile.body.avatar.mediaId, "media");
+  const removed = await executePath(router, "/v1/me/avatar", {});
+  assert.deepEqual(removed.body, { avatar: null });
+  assert.deepEqual(calls, [["complete", "owner", "media"], ["profile", "owner"], ["profile", "owner"], ["remove", "owner"]]);
 });

@@ -24,6 +24,14 @@ The canonicalization branch adds bounded reading of the stored object, exact len
 
 The profile-attachment branch adds a retry-safe confirmation service: it checks ownership and expiry, records the canonical key with a compare-and-set update, then attaches the media ID to the existing user record. Repeated confirmation of an active avatar returns the same metadata; an old ready asset cannot restore a replacement. The HTTP route, retrieval, removal and orphan cleanup are still separate work.
 
+## Avatar HTTP contract
+
+All routes require `Authorization: Bearer <Firebase ID token>` and an existing ClickMate user record. `POST /v1/me/avatar/uploads` accepts JSON `{ "contentType": "image/jpeg", "sizeBytes": 123 }` and returns `201` with `mediaId`, `uploadUrl`, `method: "POST"`, `fields`, and `expiresAt`. JPEG, PNG and WebP are accepted up to 2 MiB; a MongoDB-backed limit allows 10 sessions per user per UTC hour. The client must send every returned field plus the binary file in a multipart POST to `uploadUrl`. The signed form lasts ten minutes and may be reused until expiry, so it is never the active avatar object.
+
+`POST /v1/me/avatar/uploads/:mediaId/complete` checks the actual stored bytes, creates a canonical JPEG and attaches it to the authenticated profile. It returns `{ "success": true, "avatar": { "mediaId": "...", "url": "...", "width": 512, "height": 512, "contentType": "image/jpeg", "expiresAt": "..." } }`. `GET /v1/me/profile` returns `{ "avatar": null }` or that avatar object with a five-minute private read URL. `DELETE /v1/me/avatar` returns `{ "avatar": null }` and is safe to repeat. Clients must refresh the URL on expiry; MongoDB stores the media ID and object keys, never the signed URL or image bytes.
+
+Expected errors use `{ "message": "CODE" }` for invalid session, expired session, missing upload, invalid image, size and dimensions, or a used prior avatar. Authentication follows the existing middleware's `{ "message": "..." }` format. Storage or database failures return `503` with a generic message. No live S3 or MongoDB integration has been verified. Configure a private S3-compatible bucket and credentials outside the repository before staging tests.
+
 Each PR should target the current `main` and be merged after its own checks pass. Frontend integration starts once the confirmation and profile response contract is live; mocked tests do not establish cloud readiness.
 
 ## Foundation and deployment prerequisites

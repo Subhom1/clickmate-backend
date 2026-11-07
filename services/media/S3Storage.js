@@ -1,4 +1,5 @@
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { S3Client, HeadObjectCommand, GetObjectCommand, DeleteObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 
 // Credentials are resolved by the SDK's standard credential provider chain.
@@ -22,5 +23,6 @@ export class S3Storage {
   put(key, body, contentType) { return this.client.send(new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: body, ContentType: contentType })); }
   head(key) { return this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key })); }
   get(key) { return this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key })); }
+  readUrl(key, expires = 300) { return getSignedUrl(this.client, new GetObjectCommand({ Bucket: this.bucket, Key: key }), { expiresIn: expires }); }
   delete(key) { return this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key })); }
 }
