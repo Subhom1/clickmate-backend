@@ -35,6 +35,10 @@ export function createCompleteAvatarService({ assets, users, storage, now = () =
       } else asset = committed;
     }
     if (asset.status !== "validated" || !asset.canonicalKey) throw clientError("UPLOAD_IN_PROGRESS", 409);
+    if (asset.expiresAt && asset.expiresAt <= now()) {
+      const current = await users.findById(ownerId);
+      if (String(current?.avatarMediaId) !== String(asset._id)) throw clientError("UPLOAD_EXPIRED", 410);
+    }
     const updated = await users.updateOne({ _id: ownerId }, { $set: { avatarMediaId: asset._id } });
     if (updated.matchedCount !== 1) throw clientError("PROFILE_NOT_FOUND", 404);
     await assets.updateOne({ _id: mediaId, ownerId, status: "validated" }, { $set: { status: "ready" } });

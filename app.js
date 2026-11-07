@@ -9,6 +9,10 @@ import { connectDatabase, disconnectDatabase, isDatabaseReady } from "./config/d
 import { removeUploadedFiles } from "./middleware/upload.js";
 import userRoutes from "./routes/userRoutes.js";
 import avatarRoutes from "./routes/avatarRoutes.js";
+import MediaAsset from "./models/MediaAsset.js";
+import UserDetail from "./models/UserDetailSchema.js";
+import { createS3Storage } from "./services/media/S3Storage.js";
+import { createAvatarCleanup } from "./services/media/cleanupAvatarMedia.js";
 import contentRoutes from "./routes/contentRoutes.js";
 import chatRoutes from "./routes/chatRoutes.js";
 import { createSimilarityService } from "./services/similarityService.js";
@@ -34,6 +38,7 @@ const server = http.createServer(app);
 const io = new SocketIo(server, { cors: { origin: config.allowedOrigins } });
 const similarityService = createSimilarityService(config.pythonBin);
 const searchService = createSearchService(io, similarityService);
+let avatarCleanupTimer;
 
 app.use(userRoutes);
 app.use(avatarRoutes);
@@ -61,6 +66,12 @@ app.use(async (error, req, res, next) => {
 const startServer = async () => {
   await connectDatabase(config.mongoUri, io, config.socketAdapterEnabled);
   await similarityService.start();
+  if (process.env.MEDIA_S3_BUCKET && process.env.MEDIA_S3_REGION) {
+    const cleanup = createAvatarCleanup({ assets: MediaAsset, users: UserDetail, storage: createS3Storage() });
+    cleanup().catch(() => console.error("Avatar cleanup failed"));
+    avatarCleanupTimer = setInterval(() => cleanup().catch(() => console.error("Avatar cleanup failed")), 60 * 60 * 1000);
+    avatarCleanupTimer.unref();
+  }
   console.log("Similarity worker ready");
   server.listen(config.port, () => console.log(`Server is running on port ${config.port}`));
 };
@@ -73,6 +84,7 @@ startServer().catch((error) => {
 const shutdown = async (signal) => {
   console.log(`${signal} received, shutting down`);
   similarityService.stop();
+  if (avatarCleanupTimer) clearInterval(avatarCleanupTimer);
   await new Promise((resolve) => server.close(resolve));
   await disconnectDatabase();
   process.exit(0);

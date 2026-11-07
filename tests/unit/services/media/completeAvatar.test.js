@@ -48,3 +48,13 @@ test("rejects malformed and expired sessions before touching storage", async () 
   await assert.rejects(service(ownerId, String(mediaId)), { statusCode: 410 });
   assert.equal(touched, false);
 });
+
+test("does not attach an expired validated upload that cleanup may remove", async () => {
+  const ownerId = new mongoose.Types.ObjectId();
+  const mediaId = new mongoose.Types.ObjectId();
+  const service = createCompleteAvatarService({
+    assets: { findOne: async () => ({ _id: mediaId, status: "validated", canonicalKey: "canonical", expiresAt: new Date(0) }) },
+    users: { findById: async () => ({ avatarMediaId: null }), updateOne: async () => assert.fail("must not attach") },
+  });
+  await assert.rejects(service(ownerId, String(mediaId)), { statusCode: 410 });
+});
