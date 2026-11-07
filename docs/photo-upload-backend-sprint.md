@@ -22,6 +22,8 @@ The image-validation branch adds a bounded Sharp decoder for JPEG, PNG and WebP,
 
 The canonicalization branch adds bounded reading of the stored object, exact length comparison with the upload session, byte validation, and writing freshly encoded bytes under a key outside the signed upload prefix. The caller still needs to persist this key, manage retries and cleanup, and attach it to the authenticated profile. No route is enabled by this change.
 
+The profile-attachment branch adds a retry-safe confirmation service: it checks ownership and expiry, records the canonical key with a compare-and-set update, then attaches the media ID to the existing user record. Repeated confirmation of an active avatar returns the same metadata; an old ready asset cannot restore a replacement. The HTTP route, retrieval, removal and orphan cleanup are still separate work.
+
 Each PR should target the current `main` and be merged after its own checks pass. Frontend integration starts once the confirmation and profile response contract is live; mocked tests do not establish cloud readiness.
 
 ## Foundation and deployment prerequisites
