@@ -10,6 +10,16 @@
 - [ ] 6. Security and reliability
 - [ ] 7. Integration and staging readiness
 
+## Small PR sequence
+
+1. Storage and MongoDB foundation — merged as PR #14.
+2. Upload policy, quota, session service and isolated tests — this branch. The router is deliberately unmounted while confirmation is missing.
+3. Confirm uploads by reading and decoding the actual bytes, enforce image limits, and copy valid output to a canonical key that the signed form cannot overwrite.
+4. Atomically attach and replace the user's avatar, then add authenticated retrieval and removal.
+5. Clean up expired and unreferenced objects, add integration/security coverage, and document the frontend contract and staging prerequisites.
+
+Each PR should target the current `main` and be merged after its own checks pass. Frontend integration starts once the confirmation and profile response contract is live; mocked tests do not establish cloud readiness.
+
 ## Foundation and deployment prerequisites
 
 The existing `user` collection stores an optional `avatarMediaId`; `media_assets` stores metadata only. Object keys are unique within a bucket. Expired records are indexed for explicit cleanup, not TTL deletion: objects must be removed before their records. The S3 adapter is scoped to a configured bucket and uses the AWS SDK credential provider chain. Configure `MEDIA_S3_BUCKET`, `MEDIA_S3_REGION`, and optionally an HTTPS `MEDIA_S3_ENDPOINT`; configure credentials outside the repository. Provision a private bucket separately. Neither a bucket nor credentials have been verified.
