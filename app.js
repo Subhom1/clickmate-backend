@@ -8,6 +8,7 @@ import { config } from "./config/env.js";
 import { connectDatabase, disconnectDatabase, isDatabaseReady } from "./config/database.js";
 import { removeUploadedFiles } from "./middleware/upload.js";
 import userRoutes from "./routes/userRoutes.js";
+import avatarRoutes from "./routes/avatarRoutes.js";
 import contentRoutes from "./routes/contentRoutes.js";
 import chatRoutes from "./routes/chatRoutes.js";
 import { createSimilarityService } from "./services/similarityService.js";
@@ -35,6 +36,7 @@ const similarityService = createSimilarityService(config.pythonBin);
 const searchService = createSearchService(io, similarityService);
 
 app.use(userRoutes);
+app.use(avatarRoutes);
 app.use(contentRoutes);
 app.use(chatRoutes);
 app.get("/health", (req, res) => {
