@@ -3,10 +3,10 @@
 ## Progress
 
 - [x] 1. Architecture, models and storage adapter
-- [ ] 2. Authenticated upload sessions
-- [ ] 3. Byte verification and image validation
-- [ ] 4. Profile persistence and safe replacement
-- [ ] 5. Retrieval, removal and cleanup
+- [x] 2. Authenticated upload sessions (unit tested)
+- [x] 3. Byte verification and image validation (unit tested)
+- [x] 4. Profile persistence and safe replacement (unit tested)
+- [x] 5. Retrieval, removal and cleanup (unit tested)
 - [ ] 6. Security and reliability
 - [ ] 7. Integration and staging readiness
 
@@ -31,6 +31,12 @@ All routes require `Authorization: Bearer <Firebase ID token>` and an existing C
 `POST /v1/me/avatar/uploads/:mediaId/complete` checks the actual stored bytes, creates a canonical JPEG and attaches it to the authenticated profile. It returns `{ "success": true, "avatar": { "mediaId": "...", "url": "...", "width": 512, "height": 512, "contentType": "image/jpeg", "expiresAt": "..." } }`. `GET /v1/me/profile` returns `{ "avatar": null }` or that avatar object with a five-minute private read URL. `DELETE /v1/me/avatar` returns `{ "avatar": null }` and is safe to repeat. Clients must refresh the URL on expiry; MongoDB stores the media ID and object keys, never the signed URL or image bytes.
 
 Expected errors use `{ "message": "CODE" }` for invalid session, expired session, missing upload, invalid image, size and dimensions, or a used prior avatar. Authentication follows the existing middleware's `{ "message": "..." }` format. Storage or database failures return `503` with a generic message. No live S3 or MongoDB integration has been verified. Configure a private S3-compatible bucket and credentials outside the repository before staging tests.
+
+## Cleanup and staging limits
+
+When storage configuration is present, the server runs cleanup once after startup and hourly. It considers only media whose upload session expired at least one hour ago, skips any media still referenced by a user, and deletes the signed upload object plus any recorded canonical object before marking the record expired. Failures leave the record eligible for retry. Concurrent instances may repeat an idempotent delete. Provision a bucket lifecycle policy for untracked objects under the upload and validated prefixes; a process crash between writing a canonical object and recording its key can otherwise leave an orphan. Do not apply a lifecycle rule to active canonical objects without checking that it preserves them.
+
+The API can now be used by the frontend against a configured staging backend, but no live bucket, real MongoDB integration, frontend device test, or production permissions check has been performed. Do not treat the isolated unit tests as production verification.
 
 Each PR should target the current `main` and be merged after its own checks pass. Frontend integration starts once the confirmation and profile response contract is live; mocked tests do not establish cloud readiness.
 
