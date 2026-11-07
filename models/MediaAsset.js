@@ -5,6 +5,7 @@ const mediaAssetSchema = new mongoose.Schema({
   purpose: { type: String, required: true, enum: ["avatar"] },
   bucket: { type: String, required: true },
   objectKey: { type: String, required: true },
+  canonicalKey: String,
   storageProvider: { type: String, required: true },
   contentType: { type: String, required: true },
   sizeBytes: { type: Number, required: true, min: 1 },
