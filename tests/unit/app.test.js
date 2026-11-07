@@ -40,6 +40,7 @@ mock.module(pathToFileURL(resolve(process.cwd(), "config/env.js")), namedMock({ 
 mock.module(pathToFileURL(resolve(process.cwd(), "config/database.js")), namedMock(databaseMock));
 mock.module(pathToFileURL(resolve(process.cwd(), "middleware/upload.js")), namedMock(uploadMock));
 mock.module(pathToFileURL(resolve(process.cwd(), "routes/userRoutes.js")), defaultMock(noopRouter));
+mock.module(pathToFileURL(resolve(process.cwd(), "routes/avatarRoutes.js")), defaultMock(noopRouter));
 mock.module(pathToFileURL(resolve(process.cwd(), "routes/contentRoutes.js")), defaultMock(noopRouter));
 mock.module(pathToFileURL(resolve(process.cwd(), "routes/chatRoutes.js")), defaultMock(noopRouter));
 mock.module(pathToFileURL(resolve(process.cwd(), "services/similarityService.js")), namedMock(similarityMock));
