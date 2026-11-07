@@ -20,6 +20,8 @@
 
 The image-validation branch adds a bounded Sharp decoder for JPEG, PNG and WebP, enforces square dimensions up to 2048×2048, rejects malformed or multi-page input, and returns freshly encoded JPEG bytes with client metadata stripped. This utility is not attached to an HTTP endpoint yet. Confirmation must still read and validate the stored object, compare its actual length with the session, write canonical bytes to a separate key, and only then update the profile reference.
 
+The canonicalization branch adds bounded reading of the stored object, exact length comparison with the upload session, byte validation, and writing freshly encoded bytes under a key outside the signed upload prefix. The caller still needs to persist this key, manage retries and cleanup, and attach it to the authenticated profile. No route is enabled by this change.
+
 Each PR should target the current `main` and be merged after its own checks pass. Frontend integration starts once the confirmation and profile response contract is live; mocked tests do not establish cloud readiness.
 
 ## Foundation and deployment prerequisites
