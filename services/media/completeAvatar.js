@@ -7,6 +7,13 @@ function clientError(code, statusCode) {
   return error;
 }
 
+function isLaterUpload(candidate, current) {
+  const candidateTime = candidate.createdAt?.getTime() ?? 0;
+  const currentTime = current.createdAt?.getTime() ?? 0;
+  if (candidateTime !== currentTime) return candidateTime > currentTime;
+  return String(candidate._id) > String(current._id);
+}
+
 export function createCompleteAvatarService({ assets, users, storage, now = () => new Date() }) {
   return async function complete(ownerId, mediaId) {
     if (!mongoose.isValidObjectId(mediaId)) throw clientError("INVALID_UPLOAD_SESSION", 400);
@@ -39,8 +46,23 @@ export function createCompleteAvatarService({ assets, users, storage, now = () =
       const current = await users.findById(ownerId);
       if (String(current?.avatarMediaId) !== String(asset._id)) throw clientError("UPLOAD_EXPIRED", 410);
     }
-    const updated = await users.updateOne({ _id: ownerId }, { $set: { avatarMediaId: asset._id } });
-    if (updated.matchedCount !== 1) throw clientError("PROFILE_NOT_FOUND", 404);
+    // Compare the observed profile value so simultaneous confirmations cannot
+    // silently replace one another. The later upload may still replace an older one.
+    let attached = false;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const user = await users.findById(ownerId);
+      if (!user) throw clientError("PROFILE_NOT_FOUND", 404);
+      const currentId = user.avatarMediaId;
+      if (currentId && String(currentId) !== String(asset._id)) {
+        const current = await assets.findOne({ _id: currentId, ownerId, purpose: "avatar" });
+        if (current && !isLaterUpload(asset, current)) throw clientError("UPLOAD_ALREADY_USED", 409);
+      }
+      if (String(currentId) === String(asset._id)) { attached = true; break; }
+      const updated = await users.updateOne({ _id: ownerId, avatarMediaId: currentId ?? null },
+        { $set: { avatarMediaId: asset._id } });
+      if (updated.matchedCount === 1) { attached = true; break; }
+    }
+    if (!attached) throw clientError("UPLOAD_IN_PROGRESS", 409);
     await assets.updateOne({ _id: mediaId, ownerId, status: "validated" }, { $set: { status: "ready" } });
     return { mediaId: String(asset._id), width: asset.width, height: asset.height, contentType: asset.contentType };
   };
