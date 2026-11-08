@@ -38,6 +38,8 @@ When storage configuration is present, the server runs cleanup once after startu
 
 The API can now be used by the frontend against a configured staging backend, but no live bucket, real MongoDB integration, frontend device test, or production permissions check has been performed. Do not treat the isolated unit tests as production verification.
 
+Avatar confirmation now compares the profile's observed media ID before updating it. If two uploads complete together, a later upload may replace an earlier one, while an earlier upload cannot restore itself over a newer avatar. This race is covered by an isolated test; it still needs a real MongoDB integration check before staging sign-off.
+
 Each PR should target the current `main` and be merged after its own checks pass. Frontend integration starts once the confirmation and profile response contract is live; mocked tests do not establish cloud readiness.
 
 ## Foundation and deployment prerequisites
