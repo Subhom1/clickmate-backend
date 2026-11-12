@@ -1,3 +1,5 @@
+import { MediaClientError } from "./MediaClientError.js";
+
 export const MAX_SESSIONS_PER_HOUR = 10;
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -11,9 +13,7 @@ export function createUploadQuota({ quotas, now = () => new Date() }) {
       { upsert: true, new: true, setDefaultsOnInsert: false }
     );
     if (record.count > MAX_SESSIONS_PER_HOUR) {
-      const error = new Error("Too many upload requests");
-      error.statusCode = 429;
-      throw error;
+      throw new MediaClientError("Too many upload requests", 429);
     }
   };
 }

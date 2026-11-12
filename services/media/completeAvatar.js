@@ -1,10 +1,9 @@
 import mongoose from "mongoose";
+import { MediaClientError } from "./MediaClientError.js";
 import { canonicalizeUpload } from "./canonicalizeUpload.js";
 
 function clientError(code, statusCode) {
-  const error = new Error(code);
-  error.statusCode = statusCode;
-  return error;
+  return new MediaClientError(code, statusCode);
 }
 
 function isLaterUpload(candidate, current) {

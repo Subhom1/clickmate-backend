@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { MediaClientError } from "./MediaClientError.js";
 
 export const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 export const SESSION_SECONDS = 600;
@@ -7,7 +8,7 @@ const types = new Set(["image/jpeg", "image/png", "image/webp"]);
 export function createUploadSessionService({ assets, storage, consumeQuota }) {
   return async function createSession(ownerId, input) {
     if (!input || !types.has(input.contentType) || !Number.isSafeInteger(input.sizeBytes) || input.sizeBytes < 1 || input.sizeBytes > MAX_AVATAR_BYTES || Object.keys(input).some(key => !["contentType", "sizeBytes"].includes(key))) {
-      const error = new Error("Invalid avatar upload request"); error.statusCode = 400; throw error;
+      throw new MediaClientError("Invalid avatar upload request", 400);
     }
     await consumeQuota(ownerId);
     const objectKey = `avatars/${randomUUID()}`;

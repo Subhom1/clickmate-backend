@@ -59,3 +59,7 @@ Foundation drafted: media schema and indexes, optional user reference, S3 read/d
 ## Foundation continuation — 2026-11-06
 
 Added put support and exercised the real SDK signing and request serialization with an in-process transport, including service and credential failures. This is not a real S3 or MongoDB integration test. Package 1 is complete as an isolated foundation; upload authorization is package 2. Credentials are resolved lazily by the SDK when a storage operation runs. No frontend contract has been agreed yet.
+
+## Security follow-up — 2026-11-12
+
+Cleanup scans configured-bucket assets in ID pages and retains validated assets to avoid deleting an object while confirmation may attach it. This conservative mitigation leaves abandoned validated objects indefinitely; coordinated cleanup and recovery are still required. Only explicit media client errors are exposed by upload endpoints. Isolated tests do not verify concurrency against MongoDB, real S3, or the frontend. Staging verification and private bucket configuration remain outstanding; this is not production sign-off.
