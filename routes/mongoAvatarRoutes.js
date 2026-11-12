@@ -34,11 +34,14 @@ router.get("/v1/me/avatar-file", authenticate, loadAuthenticatedUser, async (req
 
 router.get("/v1/avatar-files/:mediaId", authenticate, async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.mediaId)) return res.status(400).json({ message: "Invalid avatar ID" });
+  const size = req.query.size === undefined ? 512 : Number(req.query.size);
+  if (![128, 256, 512].includes(size)) return res.status(400).json({ message: "Invalid avatar size" });
   try {
-    const file = await service.read(req.params.mediaId);
+    const file = await service.read(req.params.mediaId, size);
     if (!file) return res.status(404).json({ message: "Avatar not found" });
     res.set("Content-Type", "image/jpeg");
     res.set("Cache-Control", "private, max-age=300");
+    res.set("Vary", "Authorization");
     res.send(file.bytes);
   } catch { res.status(503).json({ message: "Avatar retrieval unavailable" }); }
 });

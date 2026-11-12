@@ -43,6 +43,30 @@ test("stores a validated square JPEG and returns it after a new read", async () 
   assert.equal(files.size, 1);
 });
 
+test("serves smaller JPEG variants and keeps the full avatar at 512 pixels", async () => {
+  const { service, files } = fixture();
+  await service.save(ownerId, { buffer: jpeg, mimetype: "image/jpeg" });
+  const small = await service.read("1", 128);
+  const medium = await service.read("1", 256);
+  const full = await service.read("1", 512);
+  assert.equal((await sharp(small.bytes).metadata()).width, 128);
+  assert.equal((await sharp(medium.bytes).metadata()).width, 256);
+  assert.equal((await sharp(full.bytes).metadata()).width, 512);
+  assert.ok(small.bytes.length < full.bytes.length);
+  assert.ok(medium.bytes.length < full.bytes.length);
+  assert.equal(await service.read("1", 999), undefined);
+  files.get("1").smallBytes = undefined;
+  assert.equal((await sharp((await service.read("1", 128)).bytes).metadata()).width, 128);
+});
+
+test("caps an oversized square upload to a 512-pixel stored original", async () => {
+  const { service } = fixture();
+  const large = await sharp({ create: { width: 1024, height: 1024, channels: 3, background: "#aa7744" } }).jpeg().toBuffer();
+  const result = await service.save(ownerId, { buffer: large, mimetype: "image/jpeg" });
+  assert.equal(result.width, 512);
+  assert.equal((await sharp((await service.read("1")).bytes).metadata()).width, 512);
+});
+
 test("replacement removes old bytes and deletion clears the user pointer", async () => {
   const { service, files, current } = fixture();
   await service.save(ownerId, { buffer: jpeg, mimetype: "image/jpeg" });

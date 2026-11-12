@@ -4,7 +4,9 @@ ClickMate stores each processed profile photo in the `avatar_files` collection.
 The user document holds only `avatarFileId`. The authenticated upload endpoint
 accepts a square JPEG no larger than 2 MiB. Sharp validates and re-encodes the
 bytes before storage, stripping client metadata. Each saved document contains
-`ownerId`, `bytes`, `contentType`, `width`, `height`, and timestamps. MongoDB
+`ownerId`, `bytes`, optional 128px and 256px JPEG variants, `contentType`,
+`width`, `height`, and timestamps. The stored original is capped at 512px;
+the 2 MiB upload limit is unchanged. MongoDB
 creates the collection on the first successful upload; no Atlas console change
 or GridFS bucket is required for these small files.
 
@@ -19,7 +21,9 @@ avatar by its opaque MongoDB ID.
 | --- | --- |
 | `POST /v1/me/avatar-file` multipart field `file` (`image/jpeg`) | `201 {"avatar":{"mediaId":"<id>","contentType":"image/jpeg","width":512,"height":512}}` |
 | `GET /v1/me/avatar-file` | `200 {"avatar":<metadata or null>}` |
-| `GET /v1/avatar-files/:mediaId` | `200` JPEG bytes with private cache header |
+| `GET /v1/avatar-files/:mediaId?size=128` | `200` small JPEG bytes with private cache header |
+| `GET /v1/avatar-files/:mediaId?size=256` | `200` medium JPEG bytes with private cache header |
+| `GET /v1/avatar-files/:mediaId?size=512` | `200` full JPEG bytes with private cache header; 512 is the default |
 | `DELETE /v1/me/avatar-file` | `200 {"avatar":null}` |
 
 The frontend constructs the image URL from `mediaId` and the configured API
@@ -28,6 +32,9 @@ the user's pointer only after validation and storage succeed, then removes the
 old bytes. Delete clears the pointer before removing bytes. A failed old-file
 cleanup may leave an unreachable document; operational cleanup should remove
 any `avatar_files` record not referenced by a user.
+Older avatar documents without precomputed variants are resized on demand, so
+existing uploads continue to display after this change. Invalid size values
+return HTTP 400.
 
 MongoDB recommends GridFS for files larger than its 16 MiB document limit;
 these capped avatar files fit in a normal document. See the
