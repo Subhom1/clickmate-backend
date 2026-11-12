@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { MediaClientError } from "../../../../services/media/MediaClientError.js";
 import { createAvatarRouter } from "../../../../services/media/avatarRouter.js";
 
 const response = () => ({ statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } });
@@ -42,7 +43,7 @@ test("authentication failure stops session creation", async () => {
 
 test("client errors are reported and internal errors are hidden", async () => {
   for (const [statusCode, expected] of [[400, 400], [429, 429], [undefined, 503]]) {
-    const router = createAvatarRouter({ authenticate: (req, res, next) => next(), loadUser: (req, res, next) => { req.user = { _id: "owner" }; return next(); }, createSession: async () => { const error = Error("sensitive detail"); error.statusCode = statusCode; throw error; } });
+    const router = createAvatarRouter({ authenticate: (req, res, next) => next(), loadUser: (req, res, next) => { req.user = { _id: "owner" }; return next(); }, createSession: async () => { throw statusCode ? new MediaClientError("invalid request", statusCode) : Error("sensitive detail"); } });
     const res = await execute(router, { body: {} });
     assert.equal(res.statusCode, expected);
     if (!statusCode) assert.equal(res.body.message, "Upload session unavailable");
@@ -65,4 +66,15 @@ test("completion and profile routes use the authenticated owner", async () => {
   const removed = await executePath(router, "/v1/me/avatar", {});
   assert.deepEqual(removed.body, { avatar: null });
   assert.deepEqual(calls, [["complete", "owner", "media"], ["profile", "owner"], ["profile", "owner"], ["remove", "owner"]]);
+});
+
+
+test("status-bearing infrastructure errors remain private", async () => {
+  const failure = () => { const error = Error("private infrastructure detail"); error.statusCode = 400; throw error; };
+  const router = createAvatarRouter({ authenticate: (_q, _s, next) => next(), loadUser: (q, _s, next) => { q.user = { _id: "owner" }; return next(); }, createSession: failure, complete: failure });
+  for (const [path, req] of [["/v1/me/avatar/uploads", { body: {} }], ["/v1/me/avatar/uploads/:mediaId/complete", { params: { mediaId: "id" } }]]) {
+    const res = await executePath(router, path, req);
+    assert.equal(res.statusCode, 503);
+    assert.doesNotMatch(res.body.message, /private/);
+  }
 });

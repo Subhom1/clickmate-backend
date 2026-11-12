@@ -13,8 +13,10 @@ test("removes old unreferenced objects but preserves active and foreign-bucket m
   const cleanup = createAvatarCleanup({
     assets: {
       find: query => ({ sort: () => ({ limit: async () => {
+        assert.equal(query.bucket, "private");
+        assert.deepEqual(query.status.$in, ["pending", "ready"]);
         assert.equal(query.expiresAt.$lt.toISOString(), "2026-01-01T00:00:00.000Z");
-        return media;
+        return media.filter(item => item.bucket === query.bucket && query.status.$in.includes(item.status));
       } }) }),
       updateOne: async query => { expired.push(query._id); return { modifiedCount: 1 }; },
     },
@@ -36,4 +38,19 @@ test("storage failure leaves asset eligible for a later retry", async () => {
   });
   await assert.rejects(cleanup(), /storage unavailable/);
   assert.equal(updated, false);
+});
+
+
+test("cleanup paginates past a full page of referenced assets", async () => {
+  const queries = [];
+  const cleanup = createAvatarCleanup({
+    assets: { find: query => ({ sort: () => ({ limit: async () => {
+      queries.push({ ...query });
+      return query._id ? [{ _id: 101, status: "pending", objectKey: "orphan" }] : Array.from({ length: 100 }, (_, i) => ({ _id: i + 1, status: "ready" }));
+    } }) }), updateOne: async () => ({ modifiedCount: 1 }) },
+    users: { exists: async ({ avatarMediaId }) => avatarMediaId <= 100 },
+    storage: { bucket: "private", delete: async () => {} },
+  });
+  assert.equal(await cleanup(), 1);
+  assert.equal(queries[1]._id.$gt, 100);
 });

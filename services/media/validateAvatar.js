@@ -1,13 +1,14 @@
 import sharp from "sharp";
+import { MediaClientError } from "./MediaClientError.js";
 import { MAX_AVATAR_BYTES } from "./uploadSession.js";
 
 const MAX_DIMENSION = 2048;
 const MAX_PIXELS = MAX_DIMENSION * MAX_DIMENSION;
 const formats = new Map([["jpeg", "image/jpeg"], ["png", "image/png"], ["webp", "image/webp"]]);
 
-export class InvalidAvatarError extends Error {
+export class InvalidAvatarError extends MediaClientError {
   constructor(code) {
-    super(code);
+    super(code, 400);
     this.code = code;
     this.statusCode = 400;
   }
