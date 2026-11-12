@@ -44,7 +44,7 @@ router.get("/user/:email", authenticate, async (req, res) => {
 router.get("/users/:userId/friends", authenticate, loadAuthenticatedUser, requireOwnUser, async (req, res) => {
   try {
     if (!isValidObjectId(req.params.userId)) return res.status(400).json({ message: "Invalid user ID" });
-    const user = await UserDetail.findById(req.params.userId).populate("friends", "fullname email bio interests");
+    const user = await UserDetail.findById(req.params.userId).populate("friends", "fullname email bio interests avatarFileId");
     if (!user) return res.status(404).json({ message: "User not found" });
     res.json(user.friends);
   } catch (error) {

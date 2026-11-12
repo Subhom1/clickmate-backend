@@ -6,6 +6,7 @@ const UserDetailSchema = new mongoose.Schema(
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     firebaseUid: { type: String, unique: true, sparse: true, immutable: true },
     avatarMediaId: { type: mongoose.Schema.Types.ObjectId, ref: "media_asset", default: null },
+    avatarFileId: { type: mongoose.Schema.Types.ObjectId, ref: "avatar_file", default: null },
     bio: { type: String, default: "No Bio", maxlength: 2000 },
     birthdate: {
       type: Date,

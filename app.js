@@ -9,6 +9,7 @@ import { connectDatabase, disconnectDatabase, isDatabaseReady } from "./config/d
 import { removeUploadedFiles } from "./middleware/upload.js";
 import userRoutes from "./routes/userRoutes.js";
 import avatarRoutes from "./routes/avatarRoutes.js";
+import mongoAvatarRoutes from "./routes/mongoAvatarRoutes.js";
 import MediaAsset from "./models/MediaAsset.js";
 import UserDetail from "./models/UserDetailSchema.js";
 import { createS3Storage } from "./services/media/S3Storage.js";
@@ -42,6 +43,7 @@ let avatarCleanupTimer;
 
 app.use(userRoutes);
 app.use(avatarRoutes);
+app.use(mongoAvatarRoutes);
 app.use(contentRoutes);
 app.use(chatRoutes);
 app.get("/health", (req, res) => {
