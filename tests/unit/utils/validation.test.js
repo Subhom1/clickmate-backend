@@ -4,6 +4,8 @@ import {
   isValidObjectId,
   normalizeEmail,
   normalizeSearchQuery,
+  isValidSearchDate,
+  isValidSearchTime,
 } from "../../../utils/validation.js";
 
 test("isValidObjectId accepts a 24-character hexadecimal id", () => {
@@ -29,4 +31,15 @@ test("normalizeSearchQuery trims and collapses internal whitespace", () => {
 
 test("normalizeSearchQuery returns an empty string for non-string input", () => {
   assert.equal(normalizeSearchQuery(42), "");
+});
+
+test("search schedule validation accepts picker values and rejects impossible dates or times", () => {
+  assert.equal(isValidSearchDate("2028-02-29"), true);
+  assert.equal(isValidSearchDate("2027-02-29"), false);
+  assert.equal(isValidSearchDate("2026-13-01"), false);
+  assert.equal(isValidSearchDate("2026-1-01"), false);
+  assert.equal(isValidSearchTime("00:00"), true);
+  assert.equal(isValidSearchTime("23:59"), true);
+  assert.equal(isValidSearchTime("24:00"), false);
+  assert.equal(isValidSearchTime("9:30"), false);
 });

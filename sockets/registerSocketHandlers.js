@@ -1,7 +1,7 @@
 import Chat from "../models/ChatScema.js";
 import UserDetail from "../models/UserDetailSchema.js";
 import { admin } from "../middleware/auth.js";
-import { normalizeEmail, isValidObjectId } from "../utils/validation.js";
+import { normalizeEmail, isValidObjectId, isValidSearchDate, isValidSearchTime } from "../utils/validation.js";
 import { saveMessage } from "../services/chatService.js";
 
 export const registerSocketHandlers = (io, searchService) => {
@@ -39,7 +39,7 @@ export const registerSocketHandlers = (io, searchService) => {
       return entry.count <= max;
     };
 
-    socket.on("submit_keyword", async ({ userId, query } = {}) => {
+    socket.on("submit_keyword", async ({ userId, query, date, time } = {}) => {
       if (!eventAllowed("search", 10)) return socket.emit("error", { message: "Too many searches; try again later." });
       const normalizedQuery = typeof query === "string" ? query.trim().replace(/\s+/g, " ") : "";
       const authenticatedUserId = socket.user._id.toString();
@@ -47,7 +47,9 @@ export const registerSocketHandlers = (io, searchService) => {
       if (userId !== authenticatedUserId) return socket.emit("error", { message: "You can only search as yourself." });
       if (!isValidObjectId(userId)) return socket.emit("error", { message: "Invalid user ID." });
       if (normalizedQuery.length > 500) return socket.emit("error", { message: "Search query is too long." });
-      try { await searchService.startSearch(userId, normalizedQuery, socket); }
+      if (date != null && !isValidSearchDate(date)) return socket.emit("error", { message: "Invalid date. Use YYYY-MM-DD." });
+      if (time != null && !isValidSearchTime(time)) return socket.emit("error", { message: "Invalid time. Use HH:mm." });
+      try { await searchService.startSearch(userId, normalizedQuery, socket, { date: date ?? null, time: time ?? null }); }
       catch (error) { console.error("Error during search submission:", error); socket.emit("error", { message: "An error occurred during the search." }); }
     });
 

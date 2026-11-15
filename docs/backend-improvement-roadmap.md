@@ -15,8 +15,8 @@ the remaining reliability work in
   before coding. Keep its acceptance condition.
 - Never mark a task complete because code exists only on an unmerged branch.
 
-**Current:** R00 — merge [roadmap PR #27](https://github.com/Subhom1/clickmate-backend/pull/27).
-**Next after R00:** M01 — search contract and measurable release criteria.
+**Current:** M01 — search contract and measurable release criteria.
+**Next after M01:** M02 — search metrics.
 **Blocked:** none.
 
 ## Sprint 1 — Contract and baseline
@@ -58,9 +58,13 @@ the remaining reliability work in
 
 ## Sprint 3 — Match quality with few inputs
 
-- [ ] **M09 Availability.** Validate activity date, time window or flexibility,
-  and timezone; store an unambiguous UTC interval. Keep old clients compatible
-  during rollout. **Done when:** time overlap works across timezones.
+- [x] **M09a Optional date and time picker values.** Accept and store separate
+  calendar date and time values alongside text, validate them, and use both
+  when filtering candidates while keeping text-only clients compatible.
+- [ ] **M09b Timezone-aware availability.** Add a timezone and time window or
+  flexibility, store an unambiguous UTC interval, and keep old clients
+  compatible during rollout. **Done when:** time overlap works across
+  timezones.
 - [ ] **M10 Activity mode.** Support online or nearby mode and location only
   where the activity needs it. **Done when:** in-person and online requests
   are filtered correctly without making the form heavy.
@@ -150,9 +154,16 @@ the remaining reliability work in
 
 | Date (Dublin) | Task | Branch | PR / merge | Tests and result | Blocker / next |
 | --- | --- | --- | --- | --- | --- |
-| 2026-11-15 | R00 | `docs/backend-improvement-roadmap` | [PR #27](https://github.com/Subhom1/clickmate-backend/pull/27) open | `git diff --cached --check` passed; documentation-only change | Merge after checks; then M01 |
+| 2026-11-15 | R00 | `docs/backend-improvement-roadmap` | [PR #27](https://github.com/Subhom1/clickmate-backend/pull/27) merged as `e223221` | GitHub backend regression and coverage check passed | M01 |
+| 2026-11-15 | M09a | `feature/search-date-time` | PR link to add when opened | 46 focused tests passed; `npm test` passed (195 tests and syntax); `git diff --check` passed | Merge after checks; then M01 |
 
 ## Decision log
 
 Record changes to scope, scoring policy, thresholds, and performance targets
 here with a PR or discussion link. Do not silently drop a roadmap item.
+
+- **2026-11-15, M09a:** The existing Home UI makes date and time independently
+  optional. An omitted value therefore leaves that dimension unrestricted.
+  When both users provide dates, they must match; when both provide times,
+  their local clock values must be within 60 minutes. Timezone-aware windows
+  remain in M09b.

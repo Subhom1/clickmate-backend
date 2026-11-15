@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { isValidSearchDate, isValidSearchTime } from "../utils/validation.js";
 
 const userSearchSchema = new mongoose.Schema(
   {
@@ -10,6 +11,22 @@ const userSearchSchema = new mongoose.Schema(
     query: {
       type: String,
       required: true,
+    },
+    date: {
+      type: String,
+      default: null,
+      validate: {
+        validator: (value) => value == null || isValidSearchDate(value),
+        message: "Search date must use YYYY-MM-DD",
+      },
+    },
+    time: {
+      type: String,
+      default: null,
+      validate: {
+        validator: (value) => value == null || isValidSearchTime(value),
+        message: "Search time must use HH:mm",
+      },
     },
     isLocked: {
       type: Boolean,
@@ -27,6 +44,7 @@ const userSearchSchema = new mongoose.Schema(
 
 userSearchSchema.index({ userId: 1 }, { unique: true });
 userSearchSchema.index({ isLocked: 1, created_at: 1 });
+userSearchSchema.index({ isLocked: 1, date: 1, time: 1, created_at: 1 });
 userSearchSchema.index({ created_at: 1 }, { expireAfterSeconds: 300 });
 
 const UserSearch = mongoose.model("search", userSearchSchema);

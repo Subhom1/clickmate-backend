@@ -43,6 +43,12 @@ Each authenticated socket joins only its private room, `user:<mongo-user-id>`. S
 
 An active search is a MongoDB document with a TTL index. A process-local map stores only timers and cancellation callbacks; it is not the source of truth. Candidate searches can therefore be discovered by any backend instance. Pair locking uses atomic MongoDB updates so two workers cannot successfully claim the same user pair. Search results are delivered through private Socket.IO rooms and the Mongo adapter.
 
+Search requests can include optional `date` (`YYYY-MM-DD`) and `time`
+(`HH:mm`) picker values. If both users provide a date, it must match; if both
+provide a time, the values must be within 60 minutes. Missing values are
+unrestricted, preserving text-only clients. These values are local calendar
+inputs without a timezone; UTC availability windows are planned separately.
+
 The similarity worker loads `paraphrase-mpnet-base-v2` once at startup. Requests and responses are correlated by an ID, have a timeout, and fail safely if the worker exits. The server does not begin listening until MongoDB, the adapter, and the similarity worker are ready.
 
 ## Chat behavior
