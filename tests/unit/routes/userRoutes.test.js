@@ -141,8 +141,14 @@ test("friends route returns the authenticated user's populated friend list", asy
   findByIdResult = { friends };
   const res = await invoke("/users/:userId/friends", "get", { params: { userId: "0123456789abcdef01234567" } });
   assert.equal(res.statusCode, 200);
-  assert.equal(res.payload, friends);
+  assert.deepEqual(res.payload, friends);
   assert.deepEqual(calls.findById[0], ["0123456789abcdef01234567"]);
+});
+
+test("friends route skips references to deleted users", async () => {
+  findByIdResult = { friends: [null, { _id: "bob", fullname: "Bob" }] };
+  const res = await invoke("/users/:userId/friends", "get", { params: { userId: "0123456789abcdef01234567" } });
+  assert.deepEqual(res.payload, [{ _id: "bob", fullname: "Bob" }]);
 });
 
 test("profile updates validate IDs before writing", async () => {

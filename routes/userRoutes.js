@@ -2,6 +2,9 @@ import { Router } from "express";
 import UserDetail from "../models/UserDetailSchema.js";
 import { admin, authenticate, loadAuthenticatedUser, requireOwnUser } from "../middleware/auth.js";
 import { isValidObjectId, normalizeEmail } from "../utils/validation.js";
+import MediaAsset from "../models/MediaAsset.js";
+import { createS3Storage } from "../services/media/S3Storage.js";
+import { withFriendAvatarUrls } from "../services/media/friendAvatars.js";
 
 const router = Router();
 
@@ -48,9 +51,12 @@ router.get("/user/:email", authenticate, async (req, res) => {
 router.get("/users/:userId/friends", authenticate, loadAuthenticatedUser, requireOwnUser, async (req, res) => {
   try {
     if (!isValidObjectId(req.params.userId)) return res.status(400).json({ message: "Invalid user ID" });
-    const user = await UserDetail.findById(req.params.userId).populate("friends", "fullname email bio interests avatarFileId");
+    const user = await UserDetail.findById(req.params.userId).populate("friends", "fullname email bio interests avatarFileId avatarMediaId");
     if (!user) return res.status(404).json({ message: "User not found" });
-    res.json(user.friends);
+    const populatedFriends = user.friends.filter(Boolean);
+    const storage = populatedFriends.some((friend) => friend.avatarMediaId) ? createS3Storage() : null;
+    const friends = await withFriendAvatarUrls(populatedFriends, { assets: MediaAsset, storage });
+    res.json(friends);
   } catch (error) {
     console.error("Error fetching friends:", error);
     res.status(500).json({ message: "Unable to fetch friends" });
