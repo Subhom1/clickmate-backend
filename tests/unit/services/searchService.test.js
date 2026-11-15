@@ -63,15 +63,65 @@ beforeEach(() => {
   lockResults = [{ _id: aliceId }, { _id: bobId }];
 });
 
-test("startSearch normalizes its in-memory room key and persists the query", async () => {
+test("startSearch persists text with optional date and time", async () => {
   await fakeTimers(async ({ scheduled }) => {
     const service = createSearchService(makeIO(), { compare: async () => ({ similarity_score: 0 }) });
     assert.equal(service.userRoom(aliceId), `user:${aliceId}`);
     const socket = { id: "socket-a" };
-    await service.startSearch(aliceId, "quiet forest", socket);
-    assert.deepEqual(calls.upserts, [[{ userId: aliceId }, { query: "quiet forest", created_at: calls.upserts[0][1].created_at, isLocked: false }, { upsert: true }]]);
+    await service.startSearch(aliceId, "quiet forest", socket, { date: "2028-02-29", time: "14:30" });
+    assert.deepEqual(calls.upserts, [[
+      { userId: aliceId },
+      { query: "quiet forest", date: "2028-02-29", time: "14:30", created_at: calls.upserts[0][1].created_at, isLocked: false },
+      { upsert: true, runValidators: true },
+    ]]);
     assert.ok(calls.upserts[0][1].created_at instanceof Date);
     assert.equal(scheduled.length, 1);
+  });
+});
+
+test("a text-only replacement clears an earlier search date and time", async () => {
+  await fakeTimers(async () => {
+    const service = createSearchService(makeIO(), { compare: async () => ({ similarity_score: 0 }) });
+    const socket = { id: "socket-a" };
+    await service.startSearch(aliceId, "shopping", socket, { date: "2028-02-29", time: "14:30" });
+    await service.startSearch(aliceId, "shopping", socket);
+    assert.equal(calls.upserts[1][1].date, null);
+    assert.equal(calls.upserts[1][1].time, null);
+  });
+});
+
+test("scheduled search filters by shared date and nearby time before comparing text", async () => {
+  await fakeTimers(async ({ scheduled }) => {
+    candidates = [
+      { userId: bobId, query: "shopping buddy", date: "2028-03-01", time: "14:30", created_at: new Date() },
+      { userId: bobId, query: "shopping buddy", date: "2028-02-29", time: "16:00", created_at: new Date() },
+      { userId: bobId, query: "shopping buddy", date: "2028-02-29", time: "15:00", created_at: new Date() },
+    ];
+    let comparisons = 0;
+    const service = createSearchService(makeIO(), { compare: async () => { comparisons++; return { similarity_score: 0.8 }; } });
+    await service.startSearch(aliceId, "shop together", { id: "socket-a" }, { date: "2028-02-29", time: "14:30" });
+    await scheduled.shift().callback();
+    assert.equal(comparisons, 1);
+    assert.deepEqual(calls.searches[0][0], {
+      isLocked: false,
+      userId: { $ne: aliceId },
+      $and: [
+        { $or: [{ date: "2028-02-29" }, { date: null }] },
+        { $or: [{ time: { $gte: "13:30", $lte: "15:30" } }, { time: null }] },
+      ],
+    });
+  });
+});
+
+test("text-only searches remain compatible with optional schedules", async () => {
+  await fakeTimers(async ({ scheduled }) => {
+    candidates = [{ userId: bobId, query: "shopping buddy", date: "2028-02-29", time: "14:30", created_at: new Date() }];
+    let comparisons = 0;
+    const service = createSearchService(makeIO(), { compare: async () => { comparisons++; return { similarity_score: 0.8 }; } });
+    await service.startSearch(aliceId, "shop together", { id: "socket-a" });
+    await scheduled.shift().callback();
+    assert.equal(comparisons, 1);
+    assert.deepEqual(calls.searches[0][0], { isLocked: false, userId: { $ne: aliceId } });
   });
 });
 

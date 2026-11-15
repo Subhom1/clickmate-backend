@@ -65,8 +65,21 @@ test("search schema has a five-minute TTL index and defaults new searches to unl
   const search = new UserSearch({ userId: id, query: "weekend walk" });
   await search.validate();
   assert.equal(search.isLocked, false);
+  assert.equal(search.date, null);
+  assert.equal(search.time, null);
   assert.ok(search.created_at instanceof Date);
   assert.ok(UserSearch.schema.indexes().some(([fields, options]) => fields.created_at === 1 && options.expireAfterSeconds === 300));
+});
+
+test("search schema stores optional picker date and time and rejects malformed values", async () => {
+  const search = new UserSearch({ userId: id, query: "shopping buddy", date: "2028-02-29", time: "14:30" });
+  await search.validate();
+  assert.equal(search.date, "2028-02-29");
+  assert.equal(search.time, "14:30");
+  await assert.rejects(
+    new UserSearch({ userId: id, query: "shopping buddy", date: "2027-02-29", time: "25:00" }).validate(),
+    (error) => Boolean(error.errors.date && error.errors.time)
+  );
 });
 
 test("match list schema requires both participants and timestamps new matches", async () => {

@@ -5,6 +5,36 @@ import { isValidObjectId } from "../utils/validation.js";
 const SEARCH_TIMEOUT = 30000;
 const CHECK_INTERVAL = 1000;
 const MINIMUM_SIMILARITY = 0.5;
+const TIME_TOLERANCE_MINUTES = 60;
+
+const timeToMinutes = (time) => {
+  const [hour, minute] = time.split(":").map(Number);
+  return hour * 60 + minute;
+};
+
+const minutesToTime = (minutes) =>
+  `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+
+const scheduleFilter = ({ date, time }) => {
+  const conditions = [];
+  if (date) conditions.push({ $or: [{ date }, { date: null }] });
+  if (time) {
+    const minutes = timeToMinutes(time);
+    conditions.push({ $or: [
+      { time: { $gte: minutesToTime(Math.max(0, minutes - TIME_TOLERANCE_MINUTES)),
+        $lte: minutesToTime(Math.min(1439, minutes + TIME_TOLERANCE_MINUTES)) } },
+      { time: null },
+    ] });
+  }
+  return conditions.length ? { $and: conditions } : {};
+};
+
+const scheduleMatches = (search, candidate) => {
+  if (search.date && candidate.date && search.date !== candidate.date) return false;
+  if (search.time && candidate.time &&
+    Math.abs(timeToMinutes(search.time) - timeToMinutes(candidate.time)) > TIME_TOLERANCE_MINUTES) return false;
+  return true;
+};
 
 export const createSearchService = (io, similarityService) => {
   const ongoingSearches = new Map();
@@ -35,7 +65,7 @@ export const createSearchService = (io, similarityService) => {
     return true;
   };
 
-  const findMatch = (userId, query) => {
+  const findMatch = (userId, query, schedule) => {
     let cancelled = false;
     let timer = null;
     const similarityCache = new Map();
@@ -52,11 +82,14 @@ export const createSearchService = (io, similarityService) => {
       if (cancelled) return;
       attempts++;
       try {
-        const candidates = await UserSearch.find({ isLocked: false, userId: { $ne: userId } })
+        const candidates = await UserSearch.find({
+          isLocked: false, userId: { $ne: userId }, ...scheduleFilter(schedule),
+        })
           .sort({ created_at: 1 }).lean();
         let bestMatch = null;
         let highestSimilarity = 0;
         for (const candidate of candidates) {
+          if (!scheduleMatches(schedule, candidate)) continue;
           const otherUserId = candidate.userId.toString();
           try {
             const timestamp = candidate.created_at ? new Date(candidate.created_at).getTime() : 0;
@@ -110,12 +143,13 @@ export const createSearchService = (io, similarityService) => {
     return { cancel, timer };
   };
 
-  const startSearch = async (userId, query, socket) => {
+  const startSearch = async (userId, query, socket, { date = null, time = null } = {}) => {
     await cleanupSearch(userId);
     await UserSearch.findOneAndUpdate(
-      { userId }, { query, created_at: new Date(), isLocked: false }, { upsert: true }
+      { userId }, { query, date, time, created_at: new Date(), isLocked: false },
+      { upsert: true, runValidators: true }
     );
-    const search = findMatch(userId, query);
+    const search = findMatch(userId, query, { date, time });
     ongoingSearches.set(userId, { socket, ...search });
   };
 

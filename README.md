@@ -143,10 +143,30 @@ Each file is limited to 5 MB. The extension and declared MIME type must agree, t
 
 ```js
 socket.emit("submit_keyword", { userId, query });
+socket.emit("submit_keyword", {
+  userId,
+  query: "Looking for a shopping buddy",
+  date: "2028-02-29",
+  time: "14:30",
+});
 socket.emit("cancel_search", { userId });
 ```
 
-The user ID must belong to the authenticated socket. Searches are stored in MongoDB with a five-minute TTL index. Candidate queries are compared by the Python worker; a private match is emitted when similarity reaches `0.5`. Atomic pair locking prevents duplicate matches across server instances.
+The user ID must belong to the authenticated socket. `date` and `time` are
+independently optional, so existing text-only clients continue to work. The
+date picker sends a real calendar date as `YYYY-MM-DD`; the time picker sends
+24-hour `HH:mm`. Invalid values receive an `error` event and do not replace
+the active search. Both values are stored alongside the query in MongoDB.
+
+When both users specify a date, their dates must match. When both specify a
+time, their selected times must be within 60 minutes. An omitted field does not
+restrict a match. The date and time are local picker values; timezone-aware
+availability is a later roadmap item.
+
+Searches are stored in MongoDB with a five-minute TTL index. Compatible
+candidate queries are compared by the Python worker; a private match is emitted
+when similarity reaches `0.5`. Atomic pair locking prevents duplicate matches
+across server instances.
 
 Listen for `search_update` with a match, `matches: null` on timeout, or `cancel: true` after cancellation. Validation and worker failures use the `error` event.
 

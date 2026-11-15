@@ -135,13 +135,37 @@ test("connection joins the authenticated user's private room", async () => {
   assert.deepEqual(socket.joined, [`user:${userId}`]);
 });
 
-test("submit_keyword trims and collapses query whitespace before starting search", async () => {
+test("submit_keyword forwards normalized text and optional picker date and time", async () => {
   const { socket } = await setupConnectedSocket();
-  await socket.handlers.submit_keyword({ userId, query: "  quiet   forest\nwalk " });
+  await socket.handlers.submit_keyword({ userId, query: "  quiet   forest\nwalk ", date: "2028-02-29", time: "14:30" });
   assert.equal(calls.starts.length, 1);
   assert.equal(calls.starts[0][0], userId);
   assert.equal(calls.starts[0][1], "quiet forest walk");
   assert.equal(calls.starts[0][2], socket);
+  assert.deepEqual(calls.starts[0][3], { date: "2028-02-29", time: "14:30" });
+});
+
+test("submit_keyword keeps date and time independently optional for existing screens", async () => {
+  const { socket } = await setupConnectedSocket();
+  await socket.handlers.submit_keyword({ userId, query: "walk", date: "2028-02-29" });
+  await socket.handlers.submit_keyword({ userId, query: "walk", time: "14:30" });
+  await socket.handlers.submit_keyword({ userId, query: "walk" });
+  assert.deepEqual(calls.starts.map((args) => args[3]), [
+    { date: "2028-02-29", time: null },
+    { date: null, time: "14:30" },
+    { date: null, time: null },
+  ]);
+});
+
+test("submit_keyword rejects malformed date or time before starting search", async () => {
+  const { socket } = await setupConnectedSocket();
+  await socket.handlers.submit_keyword({ userId, query: "walk", date: "2027-02-29" });
+  await socket.handlers.submit_keyword({ userId, query: "walk", time: "24:00" });
+  assert.equal(calls.starts.length, 0);
+  assert.deepEqual(socket.emitted, [
+    { event: "error", payload: { message: "Invalid date. Use YYYY-MM-DD." } },
+    { event: "error", payload: { message: "Invalid time. Use HH:mm." } },
+  ]);
 });
 
 test("submit_keyword rejects attempts to search as another user", async () => {
