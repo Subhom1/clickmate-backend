@@ -15,11 +15,9 @@ the remaining reliability work in
   before coding. Keep its acceptance condition.
 - Never mark a task complete because code exists only on an unmerged branch.
 
-**Current:** R00 — publish this roadmap on `main`.
+**Current:** R00 — merge [roadmap PR #27](https://github.com/Subhom1/clickmate-backend/pull/27).
 **Next after R00:** M01 — search contract and measurable release criteria.
-**Blocked:** GitHub issue creation returned HTTP 403 and the local `gh`
-credential was invalid on 15 November 2026. Publish this branch when GitHub
-access is restored.
+**Blocked:** none.
 
 ## Sprint 1 — Contract and baseline
 
@@ -152,7 +150,7 @@ access is restored.
 
 | Date (Dublin) | Task | Branch | PR / merge | Tests and result | Blocker / next |
 | --- | --- | --- | --- | --- | --- |
-| 2026-11-15 | R00 | `docs/backend-improvement-roadmap` | Local branch; PR blocked | Roadmap review pending | GitHub write access; then M01 |
+| 2026-11-15 | R00 | `docs/backend-improvement-roadmap` | [PR #27](https://github.com/Subhom1/clickmate-backend/pull/27) open | `git diff --cached --check` passed; documentation-only change | Merge after checks; then M01 |
 
 ## Decision log
 
