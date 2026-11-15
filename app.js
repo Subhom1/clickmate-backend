@@ -15,6 +15,7 @@ import UserDetail from "./models/UserDetailSchema.js";
 import { createS3Storage } from "./services/media/S3Storage.js";
 import { createAvatarCleanup } from "./services/media/cleanupAvatarMedia.js";
 import contentRoutes from "./routes/contentRoutes.js";
+import { createExploreUploadsRouter } from "./routes/exploreUploads.js";
 import chatRoutes from "./routes/chatRoutes.js";
 import { createSimilarityService } from "./services/similarityService.js";
 import { createSearchService } from "./services/searchService.js";
@@ -32,6 +33,7 @@ app.use(rateLimit({
   message: { message: "Too many requests, please try again later" },
 }));
 app.use(express.json({ limit: "100kb" }));
+app.use("/uploads", createExploreUploadsRouter(config.allowedOrigins));
 app.use(express.static("./public"));
 app.use(cors({ origin: config.allowedOrigins }));
 
