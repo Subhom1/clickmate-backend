@@ -12,10 +12,18 @@ export const createSimilarityService = (pythonBin) => {
       stdio: ["pipe", "pipe", "pipe"],
     });
     const lines = createInterface({ input: worker.stdout });
-    const timeout = setTimeout(
-      () => reject(new Error("Similarity worker startup timed out")),
-      120000
-    );
+    // Clear every waiting comparison when the Python process cannot continue.
+    const failWorker = (error) => {
+      clearTimeout(timeout);
+      ready = false;
+      for (const request of pending.values()) request.reject(error);
+      pending.clear();
+      reject(error);
+    };
+    const timeout = setTimeout(() => {
+      failWorker(new Error("Similarity worker startup timed out"));
+      worker.kill("SIGTERM");
+    }, 120000);
 
     lines.on("line", (line) => {
       try {
@@ -39,16 +47,10 @@ export const createSimilarityService = (pythonBin) => {
     worker.stderr.on("data", (data) =>
       console.error("Similarity worker:", data.toString().trim())
     );
-    worker.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
+    worker.once("error", failWorker);
     worker.once("exit", (code) => {
-      for (const request of pending.values()) {
-        request.reject(new Error("Similarity worker stopped"));
-      }
-      pending.clear();
-      if (code && !ready) reject(new Error(`Similarity worker exited with code ${code}`));
+      const wasReady = ready;
+      failWorker(new Error(wasReady ? "Similarity worker stopped" : `Similarity worker exited with code ${code}`));
     });
   });
 
@@ -64,9 +66,15 @@ export const createSimilarityService = (pythonBin) => {
         resolve: (result) => { clearTimeout(timeout); resolve(result); },
         reject: (error) => { clearTimeout(timeout); reject(error); },
       });
-      worker.stdin.write(`${JSON.stringify({ id, text1, text2 })}\n`);
+      try {
+        worker.stdin.write(`${JSON.stringify({ id, text1, text2 })}\n`);
+      } catch (error) {
+        pending.delete(id);
+        clearTimeout(timeout);
+        reject(error);
+      }
     });
   };
 
-  return { start, compare, stop: () => worker?.kill("SIGTERM") };
+  return { start, compare, stop: () => { ready = false; worker?.kill("SIGTERM"); } };
 };

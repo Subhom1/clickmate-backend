@@ -7,6 +7,40 @@ import { isValidObjectId } from "../utils/validation.js";
 
 const router = Router();
 
+class InvalidExploreItemsError extends Error {
+  constructor(message, statusCode = 400) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
+
+// Turn the submitted item text and uploaded filenames into category entries.
+function buildExploreItems(rawItems, files) {
+  if (!rawItems) throw new InvalidExploreItemsError("No items provided.");
+
+  let items;
+  try {
+    items = JSON.parse(rawItems);
+  } catch {
+    throw new InvalidExploreItemsError("Unable to add items");
+  }
+  if (!Array.isArray(items)) throw new InvalidExploreItemsError("Items must be an array.");
+  if (items.length < 1 || items.length > 10) {
+    throw new InvalidExploreItemsError("Items must contain between 1 and 10 entries.");
+  }
+  if (files.length !== items.length) {
+    throw new InvalidExploreItemsError("Each item must include exactly one image.");
+  }
+
+  return items.map((item, index) => {
+    const text = typeof item?.text === "string" ? item.text.trim() : "";
+    if (!text || text.length > 500) {
+      throw new InvalidExploreItemsError("Each item text must be between 1 and 500 characters.");
+    }
+    return { text, imgUrl: `/uploads/${files[index].filename}` };
+  });
+}
+
 router.get("/interests", async (req, res) => {
   try { res.status(200).json(await Interest.find()); }
   catch (error) { console.error("Error fetching interests:", error); res.status(500).json({ message: "Unable to fetch interests" }); }
@@ -26,25 +60,33 @@ router.post("/add-explore-category", authenticate, requireAdmin, async (req, res
 
 router.post("/add-items/:categoryId", authenticate, requireAdmin, upload, async (req, res) => {
   const { categoryId } = req.params;
-  const files = req.files;
-  if (!isValidObjectId(categoryId)) return res.status(400).send({ message: "Invalid category ID" });
-  if (!req.body.items) return res.status(400).send({ message: "No items provided." });
+  const files = req.files || [];
+  let saved = false;
   try {
-    await validateUploadedSignatures(files || []);
-    const parsedItems = JSON.parse(req.body.items);
-    if (!Array.isArray(parsedItems)) return res.status(400).send({ message: "Items must be an array." });
-    if (parsedItems.length === 0 || parsedItems.length > 10) return res.status(400).send({ message: "Items must contain between 1 and 10 entries." });
-    if (!files || files.length !== parsedItems.length) return res.status(400).send({ message: "Each item must include exactly one image." });
-    const itemData = parsedItems.map((item, index) => {
-      const text = typeof item.text === "string" ? item.text.trim() : "";
-      if (!text || text.length > 500) throw new Error("Each item text must be between 1 and 500 characters");
-      return { text, imgUrl: `/uploads/${files[index].filename}` };
-    });
-    res.status(200).json(await Explore.findByIdAndUpdate(categoryId, { $push: { list: { $each: itemData } } }, { new: true, upsert: true }));
+    if (!isValidObjectId(categoryId)) throw new InvalidExploreItemsError("Invalid category ID");
+    const itemData = buildExploreItems(req.body?.items, files);
+    await validateUploadedSignatures(files);
+    const category = await Explore.findByIdAndUpdate(
+      categoryId,
+      { $push: { list: { $each: itemData } } },
+      { new: true, runValidators: true }
+    );
+    if (!category) throw new InvalidExploreItemsError("Category not found", 404);
+    saved = true;
+    res.status(200).json(category);
   } catch (error) {
-    await removeUploadedFiles(files);
-    console.error("Error adding items:", error);
-    res.status(400).send({ message: "Unable to add items" });
+    if (!(error instanceof InvalidExploreItemsError)) console.error("Error adding items:", error);
+    const statusCode = error instanceof InvalidExploreItemsError
+      ? error.statusCode
+      : error.message?.includes("image type") ? 400 : 500;
+    res.status(statusCode)
+      .send({ message: error instanceof InvalidExploreItemsError ? error.message : "Unable to add items" });
+  } finally {
+    // Multer saves files before this handler runs, so every failed request must remove them.
+    if (!saved && files.length) {
+      try { await removeUploadedFiles(files); }
+      catch (error) { console.error("Unable to remove failed explore uploads:", error); }
+    }
   }
 });
 

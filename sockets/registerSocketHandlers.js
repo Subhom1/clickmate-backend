@@ -11,8 +11,12 @@ export const registerSocketHandlers = (io, searchService) => {
     try {
       const auth = await admin.auth().verifyIdToken(token);
       const email = normalizeEmail(auth.email);
-      const user = auth.uid ? await UserDetail.findOne({ $or: [{ firebaseUid: auth.uid }, { email }] }) : null;
-      if (!user) return next(new Error("User profile not found"));
+      // Prefer the immutable UID; use email only to find an unlinked legacy profile.
+      let user = auth.uid ? await UserDetail.findOne({ firebaseUid: auth.uid }) : null;
+      if (!user && email) user = await UserDetail.findOne({ email });
+      if (!user || (user.firebaseUid && user.firebaseUid !== auth.uid)) {
+        return next(new Error("User profile not found"));
+      }
       socket.auth = auth;
       socket.user = user;
       next();

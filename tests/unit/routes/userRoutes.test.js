@@ -12,7 +12,7 @@ let deleteOneResult;
 const queryFor = (value) => ({ populate() { return this; }, then(resolveValue, rejectValue) { return Promise.resolve(value).then(resolveValue, rejectValue); } });
 const userModelMock = {
   findOne: (...args) => { calls.findOne.push(args); return queryFor(findOneResult); },
-  create: async (...args) => { calls.create.push(args); return createResult; },
+  create: async (...args) => { calls.create.push(args); if (createResult instanceof Error) throw createResult; return createResult; },
   findById: (...args) => { calls.findById.push(args); return queryFor(findByIdResult); },
   findByIdAndUpdate: (...args) => { calls.findByIdAndUpdate.push(args); return queryFor(findByIdAndUpdateResult); },
   deleteOne: async (...args) => { calls.deleteOne.push(args); return deleteOneResult; },
@@ -91,6 +91,21 @@ test("registration stores normalized identity fields and returns the created use
   assert.equal(calls.create[0][0].firebaseUid, "firebase-uid");
 });
 
+test("registration hides database error details from the client", async () => {
+  createResult = new Error("private database detail");
+  const originalLog = console.error;
+  console.error = () => {};
+  try {
+    const res = await invoke("/register", "post", {
+      body: { name: "Alice" }, auth: { email: "alice@example.com", uid: "firebase-uid" },
+    });
+    assert.equal(res.statusCode, 500);
+    assert.deepEqual(res.payload, { status: "error", data: "Unable to register user" });
+  } finally {
+    console.error = originalLog;
+  }
+});
+
 test("user lookup rejects another email without querying the database", async () => {
   const res = await invoke("/user/:email", "get", { params: { email: "bob@example.com" }, auth: { email: "Alice@example.com" } });
   assert.equal(res.statusCode, 403);
@@ -103,6 +118,15 @@ test("user lookup returns 404 when the authenticated account is not registered",
   assert.equal(res.statusCode, 404);
   assert.deepEqual(res.payload, { message: "User not found" });
   assert.deepEqual(calls.findOne[0], [{ email: "alice@example.com" }]);
+});
+
+test("user lookup rejects an email profile linked to another Firebase UID", async () => {
+  findOneResult = { firebaseUid: "another-user" };
+  const res = await invoke("/user/:email", "get", {
+    params: { email: "alice@example.com" }, auth: { email: "alice@example.com", uid: "firebase-uid" },
+  });
+  assert.equal(res.statusCode, 403);
+  assert.deepEqual(res.payload, { message: "You can only access your own user" });
 });
 
 test("friends route rejects malformed user IDs before querying the database", async () => {

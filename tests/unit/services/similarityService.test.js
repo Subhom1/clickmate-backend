@@ -78,6 +78,23 @@ test("worker exit rejects all pending comparisons and clears the pending queue",
   const pending = service.compare("left", "right");
   child.emit("exit", 1);
   await assert.rejects(pending, /Similarity worker stopped/);
+  await assert.rejects(service.compare("left", "right"), /not ready/);
+});
+
+test("worker exit before readiness rejects startup even with exit code zero", async () => {
+  const service = createSimilarityService("python-test");
+  const starting = service.start();
+  child.emit("exit", 0);
+  await assert.rejects(starting, /exited with code 0/);
+});
+
+test("a failed worker write rejects the comparison without leaving a pending request", async () => {
+  const service = createSimilarityService("python-test");
+  await startReadyWorker(service);
+  responseForRequest = () => { throw new Error("pipe closed"); };
+  await assert.rejects(service.compare("left", "right"), /pipe closed/);
+  child.emit("exit", 1);
+  await assert.rejects(service.compare("left", "right"), /not ready/);
 });
 
 test("stop sends SIGTERM to the worker process", async () => {

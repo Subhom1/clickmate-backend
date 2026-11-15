@@ -6,9 +6,10 @@ import { resolve } from "node:path";
 const calls = { userFind: [], chatExists: [], updates: [], savedMessages: [], starts: [], cleanups: [] };
 let verifiedClaims;
 let profileResult;
+let profileResults;
 let chatExistsResult;
 let savedChat;
-const userModel = { findOne: async (...args) => { calls.userFind.push(args); return profileResult; } };
+const userModel = { findOne: async (...args) => { calls.userFind.push(args); return profileResults ? profileResults.shift() : profileResult; } };
 const chatModel = {
   exists: async (...args) => { calls.chatExists.push(args); return chatExistsResult; },
   updateMany: async (...args) => { calls.updates.push(args); },
@@ -74,6 +75,7 @@ beforeEach(() => {
   for (const list of Object.values(calls)) list.length = 0;
   verifiedClaims = { uid: "firebase-user", email: "Person@Example.com" };
   profileResult = { _id: { toString: () => userId } };
+  profileResults = null;
   chatExistsResult = true;
   savedChat = { messages: [{ content: "hello" }] };
 });
@@ -87,16 +89,36 @@ test("socket authentication rejects connections without a token", async () => {
   assert.equal(calls.userFind.length, 0);
 });
 
-test("socket authentication finds the registered profile using normalized email", async () => {
+test("socket authentication finds the registered profile by Firebase UID", async () => {
   const io = createIO();
   registerSocketHandlers(io, { userRoom: () => "user:test" });
   const socket = createSocket();
   let authError;
   await io.middlewares[0](socket, (error) => { authError = error; });
   assert.equal(authError, undefined);
-  assert.deepEqual(calls.userFind, [[{ $or: [{ firebaseUid: "firebase-user" }, { email: "person@example.com" }] }]]);
+  assert.deepEqual(calls.userFind, [[{ firebaseUid: "firebase-user" }]]);
   assert.equal(socket.user, profileResult);
   assert.equal(socket.auth, verifiedClaims);
+});
+
+test("socket authentication falls back to normalized email for a legacy profile", async () => {
+  profileResults = [null, profileResult];
+  const io = createIO();
+  registerSocketHandlers(io, { userRoom: () => "user:test" });
+  const socket = createSocket();
+  let authError;
+  await io.middlewares[0](socket, (error) => { authError = error; });
+  assert.equal(authError, undefined);
+  assert.deepEqual(calls.userFind, [[{ firebaseUid: "firebase-user" }], [{ email: "person@example.com" }]]);
+});
+
+test("socket authentication rejects an email profile linked to another Firebase UID", async () => {
+  profileResults = [null, { _id: userId, firebaseUid: "another-user" }];
+  const io = createIO();
+  registerSocketHandlers(io, { userRoom: () => "user:test" });
+  let authError;
+  await io.middlewares[0](createSocket(), (error) => { authError = error; });
+  assert.equal(authError.message, "User profile not found");
 });
 
 test("socket authentication rejects a valid identity without an application profile", async () => {

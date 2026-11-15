@@ -117,6 +117,19 @@ test("loadAuthenticatedUser rejects an identity with no application profile", as
   assert.deepEqual(res.payload, { message: "User profile not found" });
 });
 
+test("loadAuthenticatedUser rejects an email profile linked to another Firebase UID", async () => {
+  profileCalls.updates.length = 0;
+  profiles = [null, { _id: "profile-1", firebaseUid: "another-user" }];
+  const req = { auth: { uid: "firebase-user", email: "alice@example.com" } };
+  const res = responseRecorder();
+  let nextCalled = false;
+  await loadAuthenticatedUser(req, res, () => { nextCalled = true; });
+  assert.equal(res.statusCode, 403);
+  assert.equal(nextCalled, false);
+  assert.equal(req.user, undefined);
+  assert.equal(profileCalls.updates.length, 0);
+});
+
 test("loadAuthenticatedUser forwards database errors to Express", async () => {
   profileError = new Error("database unavailable");
   let forwarded;

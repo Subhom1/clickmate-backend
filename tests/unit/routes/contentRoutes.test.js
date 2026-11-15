@@ -131,7 +131,7 @@ test("add items appends trimmed item text and uploaded image paths", async () =>
   assert.equal(res.statusCode, 200);
   assert.equal(res.payload, updateResult);
   assert.deepEqual(calls.validation, [files]);
-  assert.deepEqual(calls.updates, [[categoryId, { $push: { list: { $each: [{ text: "A trail", imgUrl: "/uploads/images-one.png" }] } } }, { new: true, upsert: true }]]);
+  assert.deepEqual(calls.updates, [[categoryId, { $push: { list: { $each: [{ text: "A trail", imgUrl: "/uploads/images-one.png" }] } } }, { new: true, runValidators: true }]]);
 });
 
 test("add items removes uploaded files when item JSON is malformed", async () => {
@@ -143,4 +143,47 @@ test("add items removes uploaded files when item JSON is malformed", async () =>
   assert.deepEqual(res.payload, { message: "Unable to add items" });
   assert.deepEqual(calls.removed, [files]);
   assert.equal(calls.updates.length, 0);
+});
+
+test("add items removes uploaded files when the category ID is invalid", async () => {
+  const files = [{ filename: "orphan.png", path: "/tmp/orphan.png" }];
+  const res = await invoke("/add-items/:categoryId", "post", {
+    params: { categoryId: "bad-id" }, body: { items: "[]" }, files,
+  });
+  assert.equal(res.statusCode, 400);
+  assert.deepEqual(calls.removed, [files]);
+});
+
+test("add items removes uploaded files when the item count does not match", async () => {
+  const files = [{ filename: "orphan.png", path: "/tmp/orphan.png" }];
+  const res = await invoke("/add-items/:categoryId", "post", {
+    params: { categoryId: "0123456789abcdef01234567" }, body: { items: "[]" }, files,
+  });
+  assert.equal(res.statusCode, 400);
+  assert.deepEqual(calls.removed, [files]);
+  assert.equal(calls.updates.length, 0);
+});
+
+test("add items does not create a missing category and removes its upload", async () => {
+  updateResult = null;
+  const files = [{ filename: "orphan.png", path: "/tmp/orphan.png" }];
+  const res = await invoke("/add-items/:categoryId", "post", {
+    params: { categoryId: "0123456789abcdef01234567" },
+    body: { items: JSON.stringify([{ text: "A trail" }]) }, files,
+  });
+  assert.equal(res.statusCode, 404);
+  assert.deepEqual(calls.removed, [files]);
+  assert.equal(calls.updates[0][2].upsert, undefined);
+});
+
+test("add items treats a database failure as a server error and removes its upload", async () => {
+  updateResult = new Error("database secret");
+  const files = [{ filename: "orphan.png", path: "/tmp/orphan.png" }];
+  const res = await quiet(() => invoke("/add-items/:categoryId", "post", {
+    params: { categoryId: "0123456789abcdef01234567" },
+    body: { items: JSON.stringify([{ text: "A trail" }]) }, files,
+  }));
+  assert.equal(res.statusCode, 500);
+  assert.deepEqual(res.payload, { message: "Unable to add items" });
+  assert.deepEqual(calls.removed, [files]);
 });
