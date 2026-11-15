@@ -155,7 +155,7 @@ the remaining reliability work in
 | Date (Dublin) | Task | Branch | PR / merge | Tests and result | Blocker / next |
 | --- | --- | --- | --- | --- | --- |
 | 2026-11-15 | R00 | `docs/backend-improvement-roadmap` | [PR #27](https://github.com/Subhom1/clickmate-backend/pull/27) merged as `e223221` | GitHub backend regression and coverage check passed | M01 |
-| 2026-11-15 | M09a | `feature/search-date-time` | PR link to add when opened | 46 focused tests passed; `npm test` passed (195 tests and syntax); `git diff --check` passed | Merge after checks; then M01 |
+| 2026-11-15 | M09a | `feature/search-date-time` | [PR #28](https://github.com/Subhom1/clickmate-backend/pull/28) | 46 focused tests passed; `npm test` passed (195 tests and syntax); `git diff --check` passed | Merge after checks; then M01 |
 
 ## Decision log
 
