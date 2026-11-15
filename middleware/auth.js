@@ -35,6 +35,10 @@ export const loadAuthenticatedUser = async (req, res, next) => {
     if (!user) {
       return res.status(403).json({ message: "User profile not found" });
     }
+    // Email fallback is only for older profiles that have no Firebase UID yet.
+    if (user.firebaseUid && user.firebaseUid !== req.auth.uid) {
+      return res.status(403).json({ message: "User profile not found" });
+    }
 
     if (!user.firebaseUid) {
       await UserDetail.updateOne(

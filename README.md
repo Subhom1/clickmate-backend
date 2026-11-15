@@ -220,3 +220,5 @@ Use a separate database and Firebase project for local development. Do not run v
 - Review dependency advisories before releases.
 
 See [PRODUCTION_BACKEND.md](PRODUCTION_BACKEND.md) for deeper production architecture and operational rationale.
+
+The [backend audit](docs/backend-audit-2026-11-15.md) records the latest cleanup and the next reliability work in priority order.

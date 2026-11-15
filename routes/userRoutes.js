@@ -22,7 +22,8 @@ router.post("/register", authenticate, async (req, res) => {
     });
     res.status(201).send({ status: "ok", statusCode: 201, data: newUser });
   } catch (error) {
-    res.status(500).send({ status: "error", data: error.message });
+    console.error("Error registering user:", error);
+    res.status(500).send({ status: "error", data: "Unable to register user" });
   }
 });
 
@@ -34,6 +35,9 @@ router.get("/user/:email", authenticate, async (req, res) => {
   try {
     const user = await UserDetail.findOne({ email }).populate("interests").populate("friends");
     if (!user) return res.status(404).json({ message: "User not found" });
+    if (user.firebaseUid && user.firebaseUid !== req.auth.uid) {
+      return res.status(403).json({ message: "You can only access your own user" });
+    }
     res.json(user);
   } catch (error) {
     console.error("Error fetching user:", error);
