@@ -38,6 +38,9 @@ const scheduleMatches = (search, candidate) => {
 
 export const createSearchService = (io, similarityService) => {
   const ongoingSearches = new Map();
+  // Process-local observations only; no search text or user identifiers are stored.
+  const metrics = { candidates: 0, comparisons: 0, cancellations: 0, timeouts: 0,
+    failedPairClaims: 0, matches: 0, matchLatencyMsTotal: 0, matchLatencyMsMax: 0 };
   const userRoom = (userId) => `user:${userId}`;
 
   const lockUser = async (userId) => Boolean(await UserSearch.findOneAndUpdate(
@@ -47,6 +50,7 @@ export const createSearchService = (io, similarityService) => {
 
   const cleanupSearch = async (userId) => {
     const currentSearch = ongoingSearches.get(userId);
+    if (currentSearch) metrics.cancellations++;
     if (currentSearch?.timer) clearTimeout(currentSearch.timer);
     currentSearch?.cancel?.();
     await UserSearch.deleteOne({ userId });
@@ -66,6 +70,7 @@ export const createSearchService = (io, similarityService) => {
   };
 
   const findMatch = (userId, query, schedule) => {
+    const startedAt = Date.now();
     let cancelled = false;
     let timer = null;
     const similarityCache = new Map();
@@ -86,6 +91,7 @@ export const createSearchService = (io, similarityService) => {
           isLocked: false, userId: { $ne: userId }, ...scheduleFilter(schedule),
         })
           .sort({ created_at: 1 }).lean();
+        metrics.candidates += candidates.length;
         let bestMatch = null;
         let highestSimilarity = 0;
         for (const candidate of candidates) {
@@ -94,8 +100,11 @@ export const createSearchService = (io, similarityService) => {
           try {
             const timestamp = candidate.created_at ? new Date(candidate.created_at).getTime() : 0;
             const cacheKey = `${otherUserId}:${timestamp}`;
-            const result = similarityCache.get(cacheKey) ||
-              await similarityService.compare(candidate.query, query);
+            let result = similarityCache.get(cacheKey);
+            if (!result) {
+              metrics.comparisons++;
+              result = await similarityService.compare(candidate.query, query);
+            }
             similarityCache.set(cacheKey, result);
             if (typeof result.similarity_score !== "number") continue;
             if (result.similarity_score > highestSimilarity) {
@@ -108,7 +117,10 @@ export const createSearchService = (io, similarityService) => {
         }
 
         if (bestMatch && highestSimilarity >= MINIMUM_SIMILARITY && !cancelled) {
-          if (!await lockMatchPair(userId, bestMatch)) return scheduleNextCheck();
+          if (!await lockMatchPair(userId, bestMatch)) {
+            metrics.failedPairClaims++;
+            return scheduleNextCheck();
+          }
           io.to(userRoom(bestMatch)).emit("search_update", {
             matches: { user: await UserDetail.findOne({ _id: userId }), similarity: highestSimilarity },
             message: "Search result found",
@@ -119,12 +131,17 @@ export const createSearchService = (io, similarityService) => {
           });
           await UserSearch.deleteOne({ userId });
           await UserSearch.deleteOne({ userId: bestMatch });
+          const latency = Date.now() - startedAt;
+          metrics.matches++;
+          metrics.matchLatencyMsTotal += latency;
+          metrics.matchLatencyMsMax = Math.max(metrics.matchLatencyMsMax, latency);
           ongoingSearches.delete(userId);
           ongoingSearches.delete(bestMatch);
           return;
         }
 
         if (attempts < maxAttempts && !cancelled) return scheduleNextCheck();
+        if (!cancelled) metrics.timeouts++;
         io.to(userRoom(userId)).emit("search_update", cancelled
           ? { cancel: true, message: "Search has been cancelled" }
           : { matches: null, message: "No result found" });
@@ -158,5 +175,6 @@ export const createSearchService = (io, similarityService) => {
     await Promise.all(disconnected.map(([userId]) => cleanupSearch(userId)));
   };
 
-  return { userRoom, cleanupSearch, startSearch, cleanupSocketSearches, isValidObjectId };
+  const getMetrics = () => ({ ...metrics, activeSearches: ongoingSearches.size });
+  return { userRoom, cleanupSearch, startSearch, cleanupSocketSearches, isValidObjectId, getMetrics };
 };

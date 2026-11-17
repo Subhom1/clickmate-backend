@@ -3,6 +3,18 @@
 This is the target contract for the roadmap, not a claim that the current
 implementation already meets it. M04–M08 implement the lifecycle guarantees.
 
+## Process-local search observations
+
+`createSearchService(...).getMetrics()` returns aggregate observations for a
+test harness: current in-memory active searches, candidate documents returned,
+uncached comparison attempts, stopped searches (explicit cancellation,
+replacement, or disconnect), timeouts, failed pair claims, matches, and total
+and maximum initiating-search match latency in milliseconds. Counts reset on
+restart and are not shared across instances. They describe the current
+process-local lifecycle, including its known races, and are not durable counts
+of users or committed matches. No query text or user IDs are included. Worker
+queue, embedding and failure measurements and a combined report are M02.2.
+
 ## Request and result
 
 An authenticated socket submits `submit_keyword` with its own `userId`, a
