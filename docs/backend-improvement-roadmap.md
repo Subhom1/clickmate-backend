@@ -164,7 +164,7 @@ and identifies current gaps.
 | 2026-11-15 | R00 | `docs/backend-improvement-roadmap` | [PR #27](https://github.com/Subhom1/clickmate-backend/pull/27) merged as `e223221` | GitHub backend regression and coverage check passed | M01 |
 | 2026-11-15 | M09a | `feature/search-date-time` | [PR #28](https://github.com/Subhom1/clickmate-backend/pull/28), merged `d653d17099a15d78fb0cc8718fe939692d6b8c75` | 46 focused tests passed; `npm test` passed (195 tests and syntax); `git diff --check` passed | M01 |
 | 2026-11-16 | M01 | `docs/search-contract-m01` | [PR #29](https://github.com/Subhom1/clickmate-backend/pull/29), merged `5792441f17b8c7b09794052718bfc7467933af36` | `git diff --check`: passed; GitHub backend regression and coverage check passed | M02 |
-| 2026-11-17 | M02.1 | `feat/search-metrics-m02-1` | Pending PR | `node --experimental-test-module-mocks --test tests/unit/services/searchService.test.js`: 11 passed; `npm test`: 197 passed and syntax check passed with loopback access | Await PR merge; next M02.2 |
+| 2026-11-17 | M02.1 | `feat/search-metrics-m02-1` | [PR #30](https://github.com/Subhom1/clickmate-backend/pull/30) open | `node --experimental-test-module-mocks --test tests/unit/services/searchService.test.js`: 11 passed; `npm test`: 197 passed and syntax check passed with loopback access | Await PR merge; next M02.2 |
 
 ## Decision log
 
