@@ -15,16 +15,16 @@ the remaining reliability work in
   before coding. Keep its acceptance condition.
 - Never mark a task complete because code exists only on an unmerged branch.
 
-**Current:** M01 — search contract and measurable release criteria.
-**Next after M01:** M02 — search metrics.
+**Current:** M02.1 — process-local search metrics (pending PR merge).
+**Next after M02.1:** M02.2 — worker metrics and a combined test report.
 **Blocked:** none.
 
 M01's [search contract](search-contract.md) describes the target guarantees
-and identifies current gaps. It remains open until its PR merges.
+and identifies current gaps.
 
 ## Sprint 1 — Contract and baseline
 
-- [ ] **M01 Search contract and invariants.** Document request/result fields,
+- [x] **M01 Search contract and invariants.** Document request/result fields,
   one active search per user, cancellation, replacement, timeout, match
   semantics, and activity date versus profile birthdate. Set the initial
   release targets below. **Done when:** the contract covers concurrent and
@@ -33,6 +33,10 @@ and identifies current gaps. It remains open until its PR merges.
   comparisons and embeddings, queue depth, match latency, cancellations,
   timeouts, worker failures, and failed pair claims. Keep query text out of
   metrics. **Done when:** a test run can report these values.
+  - [ ] **M02.1 Search observations:** process-local active search, candidate,
+    comparison, cancellation, timeout, claim failure, and match latency metrics.
+  - [ ] **M02.2 Worker observations and report:** count embeddings and worker
+    failures, measure queue depth, and produce a combined test-run report.
 - [ ] **M03 Repeatable baseline.** Add a test-only load harness for 10, 100,
   and 1,000 connected searchers, including simultaneous submissions. Record
   hardware, database tier, p50/p95 latency, throughput, CPU, and memory.
@@ -158,8 +162,9 @@ and identifies current gaps. It remains open until its PR merges.
 | Date (Dublin) | Task | Branch | PR / merge | Tests and result | Blocker / next |
 | --- | --- | --- | --- | --- | --- |
 | 2026-11-15 | R00 | `docs/backend-improvement-roadmap` | [PR #27](https://github.com/Subhom1/clickmate-backend/pull/27) merged as `e223221` | GitHub backend regression and coverage check passed | M01 |
-| 2026-11-15 | M09a | `feature/search-date-time` | [PR #28](https://github.com/Subhom1/clickmate-backend/pull/28) | 46 focused tests passed; `npm test` passed (195 tests and syntax); `git diff --check` passed | Merge after checks; then M01 |
-| 2026-11-16 | M01 | `docs/search-contract-m01` | [PR #29](https://github.com/Subhom1/clickmate-backend/pull/29) open | `git diff --check`: passed | Await merge; next M02 |
+| 2026-11-15 | M09a | `feature/search-date-time` | [PR #28](https://github.com/Subhom1/clickmate-backend/pull/28), merged `d653d17099a15d78fb0cc8718fe939692d6b8c75` | 46 focused tests passed; `npm test` passed (195 tests and syntax); `git diff --check` passed | M01 |
+| 2026-11-16 | M01 | `docs/search-contract-m01` | [PR #29](https://github.com/Subhom1/clickmate-backend/pull/29), merged `5792441f17b8c7b09794052718bfc7467933af36` | `git diff --check`: passed; GitHub backend regression and coverage check passed | M02 |
+| 2026-11-17 | M02.1 | `feat/search-metrics-m02-1` | [PR #30](https://github.com/Subhom1/clickmate-backend/pull/30) open | `node --experimental-test-module-mocks --test tests/unit/services/searchService.test.js`: 11 passed; `npm test`: 197 passed and syntax check passed with loopback access | Await PR merge; next M02.2 |
 
 ## Decision log
 
@@ -171,3 +176,5 @@ here with a PR or discussion link. Do not silently drop a roadmap item.
   When both users provide dates, they must match; when both provide times,
   their local clock values must be within 60 minutes. Timezone-aware windows
   remain in M09b.
+- **2026-11-17, M02:** Split search observations from worker observations and
+  the combined report. M02 remains incomplete until both slices merge.

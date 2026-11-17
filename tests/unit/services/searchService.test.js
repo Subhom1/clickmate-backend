@@ -182,6 +182,43 @@ test("search continues polling when the other participant cannot be locked", asy
   });
 });
 
+test("metrics count candidates, uncached comparisons and failed claims without exposing search data", async () => {
+  await fakeTimers(async ({ scheduled }) => {
+    candidates = [{ userId: bobId, query: "private candidate", created_at: new Date() }];
+    lockResults = [{ _id: aliceId }, null, { _id: aliceId }, { _id: bobId }];
+    const service = createSearchService(makeIO(), { compare: async () => ({ similarity_score: 0.9 }) });
+    await service.startSearch(aliceId, "private query", { id: "socket-a" });
+    assert.equal(service.getMetrics().activeSearches, 1);
+    await scheduled.shift().callback();
+    await scheduled.shift().callback();
+    const report = service.getMetrics();
+    assert.equal(report.candidates, 2);
+    assert.equal(report.comparisons, 1);
+    assert.equal(report.failedPairClaims, 1);
+    assert.equal(report.matches, 1);
+    assert.equal(report.activeSearches, 0);
+    assert.ok(report.matchLatencyMsTotal >= 0);
+    assert.equal(report.matchLatencyMsTotal, report.matchLatencyMsMax);
+    assert.doesNotMatch(JSON.stringify(report), /private|012345/);
+    report.matches = 99;
+    assert.equal(service.getMetrics().matches, 1);
+  });
+});
+
+test("metrics distinguish stopped searches and timeouts", async () => {
+  await fakeTimers(async ({ scheduled }) => {
+    const service = createSearchService(makeIO(), { compare: async () => ({ similarity_score: 0 }) });
+    await service.startSearch(aliceId, "first", { id: "socket-a" });
+    await service.cleanupSearch(aliceId);
+    assert.equal(service.getMetrics().cancellations, 1);
+    scheduled.shift();
+    await service.startSearch(bobId, "second", { id: "socket-b" });
+    for (let attempt = 0; attempt < 30; attempt++) await scheduled.shift().callback();
+    assert.equal(service.getMetrics().timeouts, 1);
+    assert.equal(service.getMetrics().activeSearches, 0);
+  });
+});
+
 test("search reports a stable error and unlocks its user if candidate lookup fails", async () => {
   await fakeTimers(async ({ scheduled }) => {
     findError = new Error("private database detail");
