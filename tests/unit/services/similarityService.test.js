@@ -30,6 +30,7 @@ const nodeMajorVersion = Number(process.versions.node.split(".")[0]);
 const spawnMock = nodeMajorVersion >= 26 ? { exports: { spawn } } : { namedExports: { spawn } };
 mock.module("child_process", spawnMock);
 const { createSimilarityService } = await import(pathToFileURL(resolve(process.cwd(), "services/similarityService.js")));
+const { createSearchService } = await import(pathToFileURL(resolve(process.cwd(), "services/searchService.js")));
 const startReadyWorker = async (service) => {
   const starting = service.start();
   child.stdout.write('{"ready":true}\n');
@@ -39,7 +40,7 @@ const startReadyWorker = async (service) => {
 beforeEach(() => {
   child = null;
   spawnArguments = null;
-  responseForRequest = (request) => ({ id: request.id, similarity_score: 0.75 });
+  responseForRequest = (request) => ({ id: request.id, similarity_score: 0.75, embeddings: 2 });
 });
 
 test("similarity comparison is rejected until the worker announces readiness", async () => {
@@ -102,4 +103,43 @@ test("stop sends SIGTERM to the worker process", async () => {
   await startReadyWorker(service);
   service.stop();
   assert.equal(child.killedWith, "SIGTERM");
+});
+
+test("worker metrics report completed embeddings, pending depth and failures", async () => {
+  const service = createSimilarityService("python-test");
+  await startReadyWorker(service);
+  await service.compare("private left", "private right");
+  responseForRequest = () => null;
+  const first = service.compare("private", "one");
+  const second = service.compare("private", "two");
+  assert.deepEqual(service.getMetrics(), { embeddings: 2, workerFailures: 0, maxPending: 2, pending: 2 });
+  child.emit("exit", 1);
+  child.emit("error", new Error("duplicate failure event"));
+  await Promise.all([assert.rejects(first), assert.rejects(second)]);
+  const report = service.getMetrics();
+  assert.deepEqual(report, { embeddings: 2, workerFailures: 1, maxPending: 2, pending: 0 });
+  assert.doesNotMatch(JSON.stringify(report), /private/);
+  report.embeddings = 100;
+  assert.equal(service.getMetrics().embeddings, 2);
+});
+
+test("intentional worker shutdown is not counted as a failure", async () => {
+  const service = createSimilarityService("python-test");
+  await startReadyWorker(service);
+  service.stop();
+  child.emit("exit", 0);
+  assert.equal(service.getMetrics().workerFailures, 0);
+});
+
+test("a test run can report combined service observations", async (t) => {
+  const worker = createSimilarityService("python-test");
+  await startReadyWorker(worker);
+  const search = createSearchService({}, worker);
+  await worker.compare("first private query", "second private query");
+  const report = search.getMetricsReport();
+  assert.equal(report.worker.embeddings, 2);
+  assert.equal(report.worker.pending, 0);
+  assert.equal(report.search.activeSearches, 0);
+  assert.doesNotMatch(JSON.stringify(report), /private/);
+  t.diagnostic(`Metrics report: ${JSON.stringify(report)}`);
 });

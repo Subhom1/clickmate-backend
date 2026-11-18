@@ -176,5 +176,6 @@ export const createSearchService = (io, similarityService) => {
   };
 
   const getMetrics = () => ({ ...metrics, activeSearches: ongoingSearches.size });
-  return { userRoom, cleanupSearch, startSearch, cleanupSocketSearches, isValidObjectId, getMetrics };
+  const getMetricsReport = () => ({ search: getMetrics(), worker: similarityService.getMetrics() });
+  return { userRoom, cleanupSearch, startSearch, cleanupSocketSearches, isValidObjectId, getMetrics, getMetricsReport };
 };

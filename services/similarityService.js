@@ -6,14 +6,20 @@ export const createSimilarityService = (pythonBin) => {
   let worker;
   let ready = false;
   const pending = new Map();
+  const metrics = { embeddings: 0, workerFailures: 0, maxPending: 0 };
 
   const start = () => new Promise((resolve, reject) => {
+    let failed = false;
+    let stopping = false;
     worker = spawn(pythonBin, ["scripts/similarity_worker.py"], {
       stdio: ["pipe", "pipe", "pipe"],
     });
     const lines = createInterface({ input: worker.stdout });
     // Clear every waiting comparison when the Python process cannot continue.
     const failWorker = (error) => {
+      if (failed) return;
+      failed = true;
+      if (!stopping) metrics.workerFailures++;
       clearTimeout(timeout);
       ready = false;
       for (const request of pending.values()) request.reject(error);
@@ -28,6 +34,9 @@ export const createSimilarityService = (pythonBin) => {
     lines.on("line", (line) => {
       try {
         const result = JSON.parse(line);
+        if (Number.isSafeInteger(result.embeddings) && result.embeddings >= 0) {
+          metrics.embeddings += result.embeddings;
+        }
         if (result.ready) {
           clearTimeout(timeout);
           ready = true;
@@ -52,6 +61,7 @@ export const createSimilarityService = (pythonBin) => {
       const wasReady = ready;
       failWorker(new Error(wasReady ? "Similarity worker stopped" : `Similarity worker exited with code ${code}`));
     });
+    worker.markStopping = () => { stopping = true; };
   });
 
   const compare = async (text1, text2) => {
@@ -66,6 +76,7 @@ export const createSimilarityService = (pythonBin) => {
         resolve: (result) => { clearTimeout(timeout); resolve(result); },
         reject: (error) => { clearTimeout(timeout); reject(error); },
       });
+      metrics.maxPending = Math.max(metrics.maxPending, pending.size);
       try {
         worker.stdin.write(`${JSON.stringify({ id, text1, text2 })}\n`);
       } catch (error) {
@@ -76,5 +87,9 @@ export const createSimilarityService = (pythonBin) => {
     });
   };
 
-  return { start, compare, stop: () => { ready = false; worker?.kill("SIGTERM"); } };
+  return {
+    start, compare,
+    getMetrics: () => ({ ...metrics, pending: pending.size }),
+    stop: () => { ready = false; worker?.markStopping(); worker?.kill("SIGTERM"); },
+  };
 };

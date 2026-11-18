@@ -15,8 +15,8 @@ the remaining reliability work in
   before coding. Keep its acceptance condition.
 - Never mark a task complete because code exists only on an unmerged branch.
 
-**Current:** M02.1 — process-local search metrics (pending PR merge).
-**Next after M02.1:** M02.2 — worker metrics and a combined test report.
+**Current:** M02.2 — worker metrics and a combined test report (pending PR merge).
+**Next after M02.2:** M03 — repeatable baseline.
 **Blocked:** none.
 
 M01's [search contract](search-contract.md) describes the target guarantees
@@ -33,7 +33,7 @@ and identifies current gaps.
   comparisons and embeddings, queue depth, match latency, cancellations,
   timeouts, worker failures, and failed pair claims. Keep query text out of
   metrics. **Done when:** a test run can report these values.
-  - [ ] **M02.1 Search observations:** process-local active search, candidate,
+  - [x] **M02.1 Search observations:** process-local active search, candidate,
     comparison, cancellation, timeout, claim failure, and match latency metrics.
   - [ ] **M02.2 Worker observations and report:** count embeddings and worker
     failures, measure queue depth, and produce a combined test-run report.
@@ -164,7 +164,9 @@ and identifies current gaps.
 | 2026-11-15 | R00 | `docs/backend-improvement-roadmap` | [PR #27](https://github.com/Subhom1/clickmate-backend/pull/27) merged as `e223221` | GitHub backend regression and coverage check passed | M01 |
 | 2026-11-15 | M09a | `feature/search-date-time` | [PR #28](https://github.com/Subhom1/clickmate-backend/pull/28), merged `d653d17099a15d78fb0cc8718fe939692d6b8c75` | 46 focused tests passed; `npm test` passed (195 tests and syntax); `git diff --check` passed | M01 |
 | 2026-11-16 | M01 | `docs/search-contract-m01` | [PR #29](https://github.com/Subhom1/clickmate-backend/pull/29), merged `5792441f17b8c7b09794052718bfc7467933af36` | `git diff --check`: passed; GitHub backend regression and coverage check passed | M02 |
-| 2026-11-17 | M02.1 | `feat/search-metrics-m02-1` | [PR #30](https://github.com/Subhom1/clickmate-backend/pull/30) open | `node --experimental-test-module-mocks --test tests/unit/services/searchService.test.js`: 11 passed; `npm test`: 197 passed and syntax check passed with loopback access | Await PR merge; next M02.2 |
+| 2026-11-17 | M02.1 | `feat/search-metrics-m02-1` | [PR #30](https://github.com/Subhom1/clickmate-backend/pull/30) merged `b1cdc23dbbc122f9cc98573d072a1db6e7532ba8` | `node --experimental-test-module-mocks --test tests/unit/services/searchService.test.js`: 11 passed; `npm test`: 197 passed and syntax check passed with loopback access | M02.2 |
+
+| 2026-11-18 | M02.2 | `feat/worker-metrics-m02-2` | PR pending | Focused service and worker tests: 27 passed; `npm test`: 201 passed and syntax checks passed with loopback access; `git diff --check`: passed | Await PR merge; next M03 |
 
 ## Decision log
 

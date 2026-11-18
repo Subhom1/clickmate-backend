@@ -48,8 +48,8 @@ test("Python similarity worker sends a ready frame and correlates multiple reque
   const frames = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames, [
     { ready: true },
-    { id: "request-a", similarity_score: 0.625 },
-    { id: "request-b", similarity_score: 0.625 },
+    { id: "request-a", similarity_score: 0.625, embeddings: 2 },
+    { id: "request-b", similarity_score: 0.625, embeddings: 2 },
   ]);
 });
 
@@ -63,7 +63,7 @@ test("Python similarity worker reports a malformed request and continues process
   assert.deepEqual(frames[0], { ready: true });
   assert.equal(frames[1].id, "bad-request");
   assert.match(frames[1].error, /text2/);
-  assert.deepEqual(frames[2], { id: "good-request", similarity_score: 0.625 });
+  assert.deepEqual(frames[2], { id: "good-request", similarity_score: 0.625, embeddings: 2 });
 });
 
 test("Python similarity worker reports invalid JSON and accepts the next request", async () => {
@@ -73,7 +73,7 @@ test("Python similarity worker reports invalid JSON and accepts the next request
   assert.deepEqual(frames[0], { ready: true });
   assert.equal(frames[1].id, null);
   assert.match(frames[1].error, /JSON|property name/i);
-  assert.deepEqual(frames[2], { id: "valid", similarity_score: 0.625 });
+  assert.deepEqual(frames[2], { id: "valid", similarity_score: 0.625, embeddings: 2 });
 });
 
 test("Python similarity worker rejects a non-object JSON frame without stopping", async () => {
@@ -81,6 +81,6 @@ test("Python similarity worker rejects a non-object JSON frame without stopping"
   assert.equal(result.status, 0, result.stderr);
   const frames = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames[0], { ready: true });
-  assert.deepEqual(frames[1], { id: null, error: "Request must be a JSON object" });
-  assert.deepEqual(frames[2], { id: "valid", similarity_score: 0.625 });
+  assert.deepEqual(frames[1], { id: null, error: "Request must be a JSON object", embeddings: 0 });
+  assert.deepEqual(frames[2], { id: "valid", similarity_score: 0.625, embeddings: 2 });
 });

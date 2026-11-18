@@ -219,6 +219,18 @@ test("metrics distinguish stopped searches and timeouts", async () => {
   });
 });
 
+test("combined test report contains search and worker observations", async () => {
+  await fakeTimers(async () => {
+    const similarity = { getMetrics: () => ({ embeddings: 2, pending: 1, maxPending: 2, workerFailures: 0 }) };
+    const service = createSearchService(makeIO(), similarity);
+    await service.startSearch(aliceId, "private text", { id: "socket-a" });
+    const report = service.getMetricsReport();
+    assert.equal(report.search.activeSearches, 1);
+    assert.deepEqual(report.worker, { embeddings: 2, pending: 1, maxPending: 2, workerFailures: 0 });
+    assert.doesNotMatch(JSON.stringify(report), /private|012345/);
+  });
+});
+
 test("search reports a stable error and unlocks its user if candidate lookup fails", async () => {
   await fakeTimers(async ({ scheduled }) => {
     findError = new Error("private database detail");
