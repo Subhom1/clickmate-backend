@@ -12,8 +12,20 @@ replacement, or disconnect), timeouts, failed pair claims, matches, and total
 and maximum initiating-search match latency in milliseconds. Counts reset on
 restart and are not shared across instances. They describe the current
 process-local lifecycle, including its known races, and are not durable counts
-of users or committed matches. No query text or user IDs are included. Worker
-queue, embedding and failure measurements and a combined report are M02.2.
+of users or committed matches. No query text or user IDs are included.
+`searchService.getMetricsReport()` combines this snapshot with the similarity
+service's `getMetrics()` snapshot for test runs. Worker `pending` counts all
+outstanding requests (both executing and waiting for Python), while `maxPending`
+is its process-lifetime high-water mark, not the Python queue length. `embeddings`
+counts outputs from completed model encode calls reported by the worker, including
+late responses; results lost when the worker exits are unobservable. Worker
+`workerFailures` counts unexpected process failures once per worker start,
+excluding intentional shutdown. Metrics reset on process restart and are not
+aggregated across instances. A test harness can report them with:
+
+```js
+console.log(JSON.stringify(searchService.getMetricsReport(), null, 2));
+```
 
 ## Request and result
 
