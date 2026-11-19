@@ -15,9 +15,9 @@ the remaining reliability work in
   before coding. Keep its acceptance condition.
 - Never mark a task complete because code exists only on an unmerged branch.
 
-**Current:** M02.2 — worker metrics and a combined test report (pending PR merge).
-**Next after M02.2:** M03 — repeatable baseline.
-**Blocked:** none.
+**Current:** M03.1 — baseline report (pending PR merge).
+**Next:** M03.2 — isolated load harness and measured baseline.
+**Blocked:** M03.2 needs isolated test MongoDB and test identities.
 
 M01's [search contract](search-contract.md) describes the target guarantees
 and identifies current gaps.
@@ -29,18 +29,21 @@ and identifies current gaps.
   semantics, and activity date versus profile birthdate. Set the initial
   release targets below. **Done when:** the contract covers concurrent and
   reconnecting clients.
-- [ ] **M02 Search metrics.** Measure active searches, candidate counts,
+- [x] **M02 Search metrics.** Measure active searches, candidate counts,
   comparisons and embeddings, queue depth, match latency, cancellations,
   timeouts, worker failures, and failed pair claims. Keep query text out of
   metrics. **Done when:** a test run can report these values.
   - [x] **M02.1 Search observations:** process-local active search, candidate,
     comparison, cancellation, timeout, claim failure, and match latency metrics.
-  - [ ] **M02.2 Worker observations and report:** count embeddings and worker
+  - [x] **M02.2 Worker observations and report:** count embeddings and worker
     failures, measure queue depth, and produce a combined test-run report.
 - [ ] **M03 Repeatable baseline.** Add a test-only load harness for 10, 100,
   and 1,000 connected searchers, including simultaneous submissions. Record
   hardware, database tier, p50/p95 latency, throughput, CPU, and memory.
   **Done when:** another developer can reproduce the baseline.
+  - [ ] **M03.1 Report:** summarize recorded measurements without generating load.
+  - [ ] **M03.2 Harness and baseline:** run 10, 100, and 1,000 isolated
+    searchers, including simultaneous submissions, and record actual results.
 
 ## Sprint 2 — Search correctness
 
@@ -165,7 +168,8 @@ and identifies current gaps.
 | 2026-11-15 | M09a | `feature/search-date-time` | [PR #28](https://github.com/Subhom1/clickmate-backend/pull/28), merged `d653d17099a15d78fb0cc8718fe939692d6b8c75` | 46 focused tests passed; `npm test` passed (195 tests and syntax); `git diff --check` passed | M01 |
 | 2026-11-16 | M01 | `docs/search-contract-m01` | [PR #29](https://github.com/Subhom1/clickmate-backend/pull/29), merged `5792441f17b8c7b09794052718bfc7467933af36` | `git diff --check`: passed; GitHub backend regression and coverage check passed | M02 |
 | 2026-11-17 | M02.1 | `feat/search-metrics-m02-1` | [PR #30](https://github.com/Subhom1/clickmate-backend/pull/30) merged `b1cdc23dbbc122f9cc98573d072a1db6e7532ba8` | `node --experimental-test-module-mocks --test tests/unit/services/searchService.test.js`: 11 passed; `npm test`: 197 passed and syntax check passed with loopback access | M02.2 |
-| 2026-11-18 | M02.2 | `feat/worker-metrics-m02-2` | [PR #31](https://github.com/Subhom1/clickmate-backend/pull/31) open | Focused service and worker tests: 27 passed; `npm test`: 201 passed and syntax checks passed with loopback access; `git diff --check`: passed | Await PR merge; next M03 |
+| 2026-11-19 | M03.1 | `feat/baseline-report-m03-1` | PR pending | `node --test tests/unit/load/report.test.js`: 3 passed; `npm test`: 204 passed and syntax check passed; `git diff --check`: passed | M03.2 needs isolated test infrastructure |
+| 2026-11-18 | M02.2 | `feat/worker-metrics-m02-2` | [PR #31](https://github.com/Subhom1/clickmate-backend/pull/31) merged `45969b11a7f564b69da2e166a90ebe1c895344b9` | Focused service and worker tests: 27 passed; `npm test`: 201 passed and syntax checks passed with loopback access; `git diff --check`: passed | M03 |
 
 ## Decision log
 
@@ -179,3 +183,6 @@ here with a PR or discussion link. Do not silently drop a roadmap item.
   remain in M09b.
 - **2026-11-17, M02:** Split search observations from worker observations and
   the combined report. M02 remains incomplete until both slices merge.
+
+- **2026-11-19, M03:** Split reporting from the isolated load harness and
+  measured baseline. The parent remains incomplete until both slices land.
