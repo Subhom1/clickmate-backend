@@ -27,6 +27,7 @@ const allowedOrigins = process.env.CORS_ORIGIN?.split(",")
 
 export const config = {
   port: process.env.PORT || 5051,
+  listenHost: process.env.LISTEN_HOST || undefined,
   mongoUri: process.env.MONGODB_URI,
   allowedOrigins: allowedOrigins?.length ? allowedOrigins : false,
   pythonBin: process.env.PYTHON_BIN || "python3",

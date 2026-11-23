@@ -9,6 +9,7 @@ let databaseReady = false;
 let databaseError = null;
 const config = {
   port: 5051,
+  listenHost: "127.0.0.1",
   mongoUri: "mongodb://localhost/clickmate-test",
   allowedOrigins: false,
   pythonBin: "python3",
@@ -27,7 +28,7 @@ const similarityMock = { createSimilarityService: () => ({ start: async () => { 
 const searchMock = { createSearchService: () => ({}) };
 const socketHandlersMock = { registerSocketHandlers: () => { calls.registered++; } };
 const fakeServer = {
-  listen(port, callback) { this.port = port; callback?.(); },
+  listen(port, host, callback) { this.port = port; this.host = host; callback?.(); },
   close(callback) { calls.serverCloses++; callback?.(); },
 };
 const httpMock = { ...realHttp, createServer: () => fakeServer };
@@ -79,6 +80,7 @@ test("app connects dependencies and starts listening after worker readiness", as
   assert.deepEqual(calls.connect, [[config.mongoUri, fakeIo, false]]);
   assert.equal(calls.workerStarts, 1);
   assert.equal(fakeServer.port, config.port);
+  assert.equal(fakeServer.host, config.listenHost);
   assert.equal(calls.registered, 1);
 });
 

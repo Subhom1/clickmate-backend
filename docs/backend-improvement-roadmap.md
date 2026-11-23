@@ -15,9 +15,10 @@ the remaining reliability work in
   before coding. Keep its acceptance condition.
 - Never mark a task complete because code exists only on an unmerged branch.
 
-**Current:** M03.1 — baseline report (pending PR merge).
-**Next:** M03.2 — isolated load harness and measured baseline.
-**Blocked:** M03.2 needs isolated test MongoDB and test identities.
+**Current:** M03.2.1 — local load harness (pending PR merge).
+**Next:** M03.2.2 — resource-guarded 10, 100, and 1,000-user baseline.
+**Blocked:** the 100-user exploratory burst left all searches unresolved; the
+1,000-user run needs resource guards before it can safely execute.
 
 M01's [search contract](search-contract.md) describes the target guarantees
 and identifies current gaps.
@@ -41,9 +42,15 @@ and identifies current gaps.
   and 1,000 connected searchers, including simultaneous submissions. Record
   hardware, database tier, p50/p95 latency, throughput, CPU, and memory.
   **Done when:** another developer can reproduce the baseline.
-  - [ ] **M03.1 Report:** summarize recorded measurements without generating load.
+  - [x] **M03.1 Report:** summarize recorded measurements without generating load.
+    Merged in [PR #32](https://github.com/Subhom1/clickmate-backend/pull/32)
+    as `ad28fb125b7646c7b4066858496ccbde5cafcfd0`.
   - [ ] **M03.2 Harness and baseline:** run 10, 100, and 1,000 isolated
     searchers, including simultaneous submissions, and record actual results.
+    - [ ] **M03.2.1 Local harness:** provision isolated services and run a
+      simultaneous burst with bounded observation.
+    - [ ] **M03.2.2 Measured baseline:** add resource guards and collect CPU,
+      peak memory, and actual 10, 100, and 1,000-user measurements.
 
 ## Sprint 2 — Search correctness
 
@@ -168,7 +175,8 @@ and identifies current gaps.
 | 2026-11-15 | M09a | `feature/search-date-time` | [PR #28](https://github.com/Subhom1/clickmate-backend/pull/28), merged `d653d17099a15d78fb0cc8718fe939692d6b8c75` | 46 focused tests passed; `npm test` passed (195 tests and syntax); `git diff --check` passed | M01 |
 | 2026-11-16 | M01 | `docs/search-contract-m01` | [PR #29](https://github.com/Subhom1/clickmate-backend/pull/29), merged `5792441f17b8c7b09794052718bfc7467933af36` | `git diff --check`: passed; GitHub backend regression and coverage check passed | M02 |
 | 2026-11-17 | M02.1 | `feat/search-metrics-m02-1` | [PR #30](https://github.com/Subhom1/clickmate-backend/pull/30) merged `b1cdc23dbbc122f9cc98573d072a1db6e7532ba8` | `node --experimental-test-module-mocks --test tests/unit/services/searchService.test.js`: 11 passed; `npm test`: 197 passed and syntax check passed with loopback access | M02.2 |
-| 2026-11-19 | M03.1 | `feat/baseline-report-m03-1` | [PR #32](https://github.com/Subhom1/clickmate-backend/pull/32) open | `node --test tests/unit/load/report.test.js`: 3 passed; `npm test`: 204 passed and syntax check passed; `git diff --check`: passed | M03.2 needs isolated test infrastructure |
+| 2026-11-23 | M03.2.1 | `feat/load-harness-m03-2` | PR pending | `npm test`: 206 passed and syntax passed; `npm run test:coverage`: passed; local 2, 10, 100-user bursts completed | 100 unresolved at 45s; M03.2.2 needs resource guards |
+| 2026-11-19 | M03.1 | `feat/baseline-report-m03-1` | [PR #32](https://github.com/Subhom1/clickmate-backend/pull/32) merged `ad28fb125b7646c7b4066858496ccbde5cafcfd0` | `node --test tests/unit/load/report.test.js`: 3 passed; `npm test`: 204 passed and syntax check passed; `git diff --check`: passed | M03.2 needs isolated test infrastructure |
 | 2026-11-18 | M02.2 | `feat/worker-metrics-m02-2` | [PR #31](https://github.com/Subhom1/clickmate-backend/pull/31) merged `45969b11a7f564b69da2e166a90ebe1c895344b9` | Focused service and worker tests: 27 passed; `npm test`: 201 passed and syntax checks passed with loopback access; `git diff --check`: passed | M03 |
 
 ## Decision log
@@ -186,3 +194,8 @@ here with a PR or discussion link. Do not silently drop a roadmap item.
 
 - **2026-11-19, M03:** Split reporting from the isolated load harness and
   measured baseline. The parent remains incomplete until both slices land.
+
+- **2026-11-23, M03.2:** Split a local harness from the measured baseline.
+  Exploratory 10-user runs reproduced duplicate events, and a 100-user run
+  had no decisions within 45 seconds. The 1,000-user run requires resource
+  guards; the parent remains incomplete.
