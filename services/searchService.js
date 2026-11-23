@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import UserDetail from "../models/UserDetailSchema.js";
 import UserSearch from "../models/UserSearchSchema.js";
 import { isValidObjectId } from "../utils/validation.js";
@@ -198,12 +199,13 @@ export const createSearchService = (io, similarityService) => {
       availabilityStart: interval ? new Date(interval.startMs) : null,
       availabilityEnd: interval ? new Date(interval.endMs) : null };
     await cleanupSearch(userId);
+    const searchId = randomUUID();
     await UserSearch.findOneAndUpdate(
-      { userId }, { query, ...schedule, created_at: new Date(), isLocked: false },
+      { userId }, { searchId, query, ...schedule, created_at: new Date(), isLocked: false },
       { upsert: true, runValidators: true }
     );
     const search = findMatch(userId, query, schedule);
-    ongoingSearches.set(userId, { socket, ...search });
+    ongoingSearches.set(userId, { searchId, socket, ...search });
   };
 
   const cleanupSocketSearches = async (socketId) => {

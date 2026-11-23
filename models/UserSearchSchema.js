@@ -8,6 +8,8 @@ const userSearchSchema = new mongoose.Schema(
       required: true,
       ref: "user",
     },
+    // Optional during rollout so records created by older instances remain readable.
+    searchId: { type: String, default: null },
     query: {
       type: String,
       required: true,

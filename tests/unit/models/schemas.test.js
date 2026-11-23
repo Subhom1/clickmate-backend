@@ -71,6 +71,16 @@ test("search schema has a five-minute TTL index and defaults new searches to unl
   assert.ok(UserSearch.schema.indexes().some(([fields, options]) => fields.created_at === 1 && options.expireAfterSeconds === 300));
 });
 
+test("search schema retains an attempt ID and accepts legacy records without one", async () => {
+  const searchId = "5f5593a4-4699-47e5-9fc2-62165d8a8fba";
+  const identified = new UserSearch({ userId: id, query: "walk", searchId });
+  const legacy = new UserSearch({ userId: id, query: "walk" });
+  await identified.validate();
+  await legacy.validate();
+  assert.equal(identified.toObject().searchId, searchId);
+  assert.equal(legacy.searchId, null);
+});
+
 test("search schema stores optional picker date and time and rejects malformed values", async () => {
   const search = new UserSearch({ userId: id, query: "shopping buddy", date: "2028-02-29", time: "14:30" });
   await search.validate();
