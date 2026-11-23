@@ -58,10 +58,13 @@ export const createSearchService = (io, similarityService) => {
     failedPairClaims: 0, matches: 0, matchLatencyMsTotal: 0, matchLatencyMsMax: 0 };
   const userRoom = (userId) => `user:${userId}`;
 
-  const lockUser = async (userId) => Boolean(await UserSearch.findOneAndUpdate(
+  const lockUser = (userId) => UserSearch.findOneAndUpdate(
     { userId, isLocked: { $ne: true } }, { isLocked: true }, { new: true }
-  ));
+  );
   const unlockUser = (userId) => UserSearch.findOneAndUpdate({ userId }, { isLocked: false });
+  const unlockClaim = (claim) => UserSearch.findOneAndUpdate(
+    { _id: claim._id, isLocked: true }, { isLocked: false }
+  );
 
   const cleanupSearch = async (userId) => {
     const currentSearch = ongoingSearches.get(userId);
@@ -77,11 +80,9 @@ export const createSearchService = (io, similarityService) => {
     const selfLocked = await lockUser(userId);
     if (!selfLocked) return false;
     const otherLocked = await lockUser(otherUserId);
-    if (!otherLocked) {
-      await unlockUser(userId);
-      return false;
-    }
-    return true;
+    if (otherLocked) return [selfLocked, otherLocked];
+    await unlockClaim(selfLocked);
+    return false;
   };
 
   const findMatch = (userId, query, schedule) => {
@@ -102,6 +103,7 @@ export const createSearchService = (io, similarityService) => {
     const checkForMatches = async () => {
       if (cancelled) return;
       attempts++;
+      let claims = null;
       try {
         const candidates = await UserSearch.find({
           isLocked: false, userId: { $ne: userId }, ...scheduleFilter(schedule),
@@ -136,13 +138,16 @@ export const createSearchService = (io, similarityService) => {
 
         if (cancelled) return;
         if (bestMatch && highestSimilarity >= MINIMUM_SIMILARITY) {
-          if (!await lockMatchPair(userId, bestMatch)) {
+          claims = await lockMatchPair(userId, bestMatch);
+          if (!claims) {
             metrics.failedPairClaims++;
             return scheduleNextCheck();
           }
           // Read both profiles before stopping the partner loop or notifying either user.
           const user = await UserDetail.findOne({ _id: userId });
           const partner = await UserDetail.findOne({ _id: bestMatch });
+          // Once notifications begin, do not roll both claims back on a later failure.
+          claims = null;
           ongoingSearches.get(bestMatch)?.cancel?.();
           clearTimeout(timer);
           io.to(userRoom(bestMatch)).emit("search_update", {
@@ -173,10 +178,11 @@ export const createSearchService = (io, similarityService) => {
         await unlockUser(userId);
         ongoingSearches.delete(userId);
       } catch (error) {
+        if (claims) await Promise.all(claims.map(unlockClaim));
         if (cancelled) return;
         console.error("Error during match checking:", error);
         io.to(userRoom(userId)).emit("error", { message: "An error occurred while checking for matches." });
-        await unlockUser(userId);
+        if (!claims) await unlockUser(userId);
         ongoingSearches.delete(userId);
       }
     };
