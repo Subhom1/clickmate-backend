@@ -15,8 +15,8 @@ the remaining reliability work in
   before coding. Keep its acceptance condition.
 - Never mark a task complete because code exists only on an unmerged branch.
 
-**Current:** M04.2.1 — roll back pair claims after profile lookup failure (pending PR merge).
-**Next:** M04.2.2 — cancellation, replacement, and timeout races during claims.
+**Current:** M05.1 — search-attempt identity foundation (pending PR merge).
+**Next:** M05.2 — condition lifecycle operations on attempt identity.
 **Blocked:** M03.2.2 needs resource guards; the 100-user exploratory burst
 left all searches unresolved. M04.2 claim and replacement races remain.
 
@@ -65,15 +65,21 @@ and identifies current gaps.
     `08b4440874b28277ffca2daf46c6c65db011e84f`.
   - [ ] **M04.2 Remaining races:** protect cancellation, replacement, and
     timeout work that overlaps an in-progress pair claim.
-    - [ ] **M04.2.1 Claim failure recovery:** release both claimed records if
+    - [x] **M04.2.1 Claim failure recovery:** release both claimed records if
       a profile lookup fails before notification; release the first claim if
-      the second claim is unavailable. This does not resolve claim ownership
-      races or database failures while acquiring or releasing claims.
+      the second claim is unavailable. Merged in
+      [PR #36](https://github.com/Subhom1/clickmate-backend/pull/36) as
+      `5164dcb5d62cb317f3783ada8a8bf12d36d840b2`. Claim ownership and database
+      failures during acquisition or release remain unresolved.
     - [ ] **M04.2.2 Claim ownership and lifecycle races:** protect cancellation,
       replacement, and timeout against in-progress claims.
 - [ ] **M05 Search identity.** Give each search attempt a unique ID or
   generation. **Done when:** stale work cannot delete, unlock, or notify for a
   newer attempt.
+  - [ ] **M05.1 Identity foundation:** assign and persist an ID for each
+    new attempt without changing the wire protocol.
+  - [ ] **M05.2 Guard stale work:** condition operations on attempt identity
+    and define a safe transition from old records and clients.
 - [ ] **M06 Explicit states.** Model waiting, claiming or matched, cancelled,
   and expired with conditional transitions. Define which outcome wins when
   cancellation races with matching. **Done when:** every transition is
@@ -195,7 +201,8 @@ and identifies current gaps.
 | 2026-11-15 | M09a | `feature/search-date-time` | [PR #28](https://github.com/Subhom1/clickmate-backend/pull/28), merged `d653d17099a15d78fb0cc8718fe939692d6b8c75` | 46 focused tests passed; `npm test` passed (195 tests and syntax); `git diff --check` passed | M01 |
 | 2026-11-16 | M01 | `docs/search-contract-m01` | [PR #29](https://github.com/Subhom1/clickmate-backend/pull/29), merged `5792441f17b8c7b09794052718bfc7467933af36` | `git diff --check`: passed; GitHub backend regression and coverage check passed | M02 |
 | 2026-11-17 | M02.1 | `feat/search-metrics-m02-1` | [PR #30](https://github.com/Subhom1/clickmate-backend/pull/30) merged `b1cdc23dbbc122f9cc98573d072a1db6e7532ba8` | `node --experimental-test-module-mocks --test tests/unit/services/searchService.test.js`: 11 passed; `npm test`: 197 passed and syntax check passed with loopback access | M02.2 |
-| 2026-11-23 | M04.2.1 | `fix/search-claim-rollback-m04-2-1` | [PR #36](https://github.com/Subhom1/clickmate-backend/pull/36) open | `node --experimental-test-module-mocks --test tests/unit/services/searchService.test.js`: 19 passed; `npm test`: 220 passed, 1 integration test skipped, syntax passed (loopback access); `git diff --check`: passed | M04.2.2 claim ownership and lifecycle races remain |
+| 2026-11-23 | M05.1 | `feat/search-attempt-identity-m05-1` | PR pending | Focused service/schema tests: 30 passed; `npm test`: 222 passed, 2 opt-in integration tests skipped, syntax passed; `RUN_MONGODB_INTEGRATION=1 node --test tests/integration/searchIdentity.test.js`: 1 passed | IDs alone do not prevent stale work; M05.2 must add guards |
+| 2026-11-23 | M04.2.1 | `fix/search-claim-rollback-m04-2-1` | [PR #36](https://github.com/Subhom1/clickmate-backend/pull/36) merged `5164dcb5d62cb317f3783ada8a8bf12d36d840b2` | `node --experimental-test-module-mocks --test tests/unit/services/searchService.test.js`: 19 passed; `npm test`: 220 passed, 1 integration test skipped, syntax passed (loopback access); `git diff --check`: passed | M04.2.2 claim ownership and lifecycle races remain |
 | 2026-11-23 | M09b.1 | `feat/search-timezone-m09b` | [PR #35](https://github.com/Subhom1/clickmate-backend/pull/35) merged `a1c7208ca4323d289420e2d2801667c7d1f3ae4d` | Focused timezone/socket/search tests: 47 passed; `npm test`: 220 passed, 1 integration test skipped, syntax passed; `RUN_MONGODB_INTEGRATION=1 node --test tests/integration/searchTimezone.test.js`: 1 passed | M09b.2 mobile integration and platform verification remain |
 | 2026-11-23 | M04.1 | `fix/search-match-timers-m04-1` | [PR #34](https://github.com/Subhom1/clickmate-backend/pull/34) merged `08b4440874b28277ffca2daf46c6c65db011e84f` | Focused search tests: 16 passed; `npm test`: 210 passed and syntax passed; 10-user burst: 10 matches, 0 extra updates | M04.2 claim, cancellation, and replacement races remain |
 | 2026-11-23 | M03.2.1 | `feat/load-harness-m03-2` | [PR #33](https://github.com/Subhom1/clickmate-backend/pull/33) merged `f76ec220de665a7386480d2b7cb89d1b54a9be51` | `npm test`: 206 passed and syntax passed; `npm run test:coverage`: passed; local 2, 10, 100-user bursts completed | 100 unresolved at 45s; M03.2.2 needs resource guards |
@@ -232,3 +239,7 @@ here with a PR or discussion link. Do not silently drop a roadmap item.
   legacy constrained schedule is not compared with a zoned one because its
   timezone is unknown. Text-only searches remain unrestricted. Backend and
   mobile rollout are separate; M09b remains open until both are verified.
+
+- **2026-11-23, M05:** Split identity generation from the conditional
+  operations and rollout needed to make those identities enforce safety.
+  Generated IDs alone do not prevent stale work; the parent remains open.

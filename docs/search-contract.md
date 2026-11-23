@@ -59,6 +59,17 @@ client can deduplicate delivery and reconcile after a missed event (M05, M08).
 The exact wire format and migration for these additions are deferred to those
 tasks; clients must not assume they exist yet.
 
+## Search identity foundation
+
+New searches are assigned a server-generated UUID that is stored in the search
+record and its local process entry. Existing records may lack an ID, and older
+backend instances can continue to create them during a mixed-version rollout;
+an older writer may also retain an ID on a different attempt. Concurrent new
+writers can leave a local ID out of sync with the persisted record. The ID is not yet sent to clients or used to condition locks, cleanup, or
+notifications. It does not prevent stale work or establish ordering between
+concurrent requests; M05 and the remaining lifecycle guarantees below are
+incomplete. All writers must understand identity before it can be relied on.
+
 ## Lifecycle guarantees to implement
 
 - Each user has at most one current search across sockets and instances. Each

@@ -73,11 +73,26 @@ test("startSearch persists text with optional date and time", async () => {
     await service.startSearch(aliceId, "quiet forest", socket, { date: "2028-02-29", time: "14:30" });
     assert.deepEqual(calls.upserts, [[
       { userId: aliceId },
-      { query: "quiet forest", date: "2028-02-29", time: "14:30", timeZone: null, utcOffsetMinutes: null, availabilityStart: null, availabilityEnd: null, created_at: calls.upserts[0][1].created_at, isLocked: false },
+      { searchId: calls.upserts[0][1].searchId, query: "quiet forest", date: "2028-02-29", time: "14:30", timeZone: null, utcOffsetMinutes: null, availabilityStart: null, availabilityEnd: null, created_at: calls.upserts[0][1].created_at, isLocked: false },
       { upsert: true, runValidators: true },
     ]]);
     assert.ok(calls.upserts[0][1].created_at instanceof Date);
     assert.equal(scheduled.length, 1);
+  });
+});
+
+test("each sequential search replacement persists a fresh UUID", async () => {
+  await fakeTimers(async () => {
+    const service = createSearchService(makeIO(), { compare: async () => ({ similarity_score: 0 }) });
+    const socket = { id: "socket-a" };
+    await service.startSearch(aliceId, "first", socket);
+    await service.startSearch(aliceId, "second", socket);
+    const [first, second] = calls.upserts.map(([, update]) => update.searchId);
+    const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    assert.match(first, uuidV4);
+    assert.match(second, uuidV4);
+    assert.notEqual(first, second);
+    assert.deepEqual(calls.upserts.map(([filter]) => filter), [{ userId: aliceId }, { userId: aliceId }]);
   });
 });
 
