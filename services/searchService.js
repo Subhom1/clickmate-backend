@@ -1,6 +1,7 @@
 import UserDetail from "../models/UserDetailSchema.js";
 import UserSearch from "../models/UserSearchSchema.js";
 import { isValidObjectId } from "../utils/validation.js";
+import { searchAvailability, availabilityOverlaps } from "../utils/searchAvailability.js";
 
 const SEARCH_TIMEOUT = 30000;
 const CHECK_INTERVAL = 1000;
@@ -15,7 +16,13 @@ const timeToMinutes = (time) => {
 const minutesToTime = (minutes) =>
   `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
 
-const scheduleFilter = ({ date, time }) => {
+const scheduleFilter = ({ date, time, availabilityStart, availabilityEnd }) => {
+  if (availabilityStart && availabilityEnd) {
+    return { $or: [
+      { availabilityStart: { $lte: availabilityEnd }, availabilityEnd: { $gte: availabilityStart } },
+      { availabilityStart: null, date: null, time: null },
+    ] };
+  }
   const conditions = [];
   if (date) conditions.push({ $or: [{ date }, { date: null }] });
   if (time) {
@@ -26,10 +33,18 @@ const scheduleFilter = ({ date, time }) => {
       { time: null },
     ] });
   }
-  return conditions.length ? { $and: conditions } : {};
+  return conditions.length ? { availabilityStart: null, $and: conditions } : {};
 };
 
 const scheduleMatches = (search, candidate) => {
+  const searchZoned = search.availabilityStart != null && search.availabilityEnd != null;
+  const candidateZoned = candidate.availabilityStart != null && candidate.availabilityEnd != null;
+  if (searchZoned && candidateZoned) return availabilityOverlaps(
+    { startMs: new Date(search.availabilityStart).getTime(), endMs: new Date(search.availabilityEnd).getTime() },
+    { startMs: new Date(candidate.availabilityStart).getTime(), endMs: new Date(candidate.availabilityEnd).getTime() }
+  );
+  if (searchZoned) return !candidate.date && !candidate.time;
+  if (candidateZoned) return !search.date && !search.time;
   if (search.date && candidate.date && search.date !== candidate.date) return false;
   if (search.time && candidate.time &&
     Math.abs(timeToMinutes(search.time) - timeToMinutes(candidate.time)) > TIME_TOLERANCE_MINUTES) return false;
@@ -170,13 +185,18 @@ export const createSearchService = (io, similarityService) => {
     return { cancel, timer };
   };
 
-  const startSearch = async (userId, query, socket, { date = null, time = null } = {}) => {
+  const startSearch = async (userId, query, socket, { date = null, time = null, timeZone = null, utcOffsetMinutes = null } = {}) => {
+    const interval = timeZone != null || utcOffsetMinutes != null
+      ? searchAvailability({ date, time, timeZone, utcOffsetMinutes }) : null;
+    const schedule = { date, time, timeZone, utcOffsetMinutes,
+      availabilityStart: interval ? new Date(interval.startMs) : null,
+      availabilityEnd: interval ? new Date(interval.endMs) : null };
     await cleanupSearch(userId);
     await UserSearch.findOneAndUpdate(
-      { userId }, { query, date, time, created_at: new Date(), isLocked: false },
+      { userId }, { query, ...schedule, created_at: new Date(), isLocked: false },
       { upsert: true, runValidators: true }
     );
-    const search = findMatch(userId, query, { date, time });
+    const search = findMatch(userId, query, schedule);
     ongoingSearches.set(userId, { socket, ...search });
   };
 

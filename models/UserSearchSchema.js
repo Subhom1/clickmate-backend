@@ -28,6 +28,10 @@ const userSearchSchema = new mongoose.Schema(
         message: "Search time must use HH:mm",
       },
     },
+    timeZone: { type: String, default: null },
+    utcOffsetMinutes: { type: Number, default: null },
+    availabilityStart: { type: Date, default: null },
+    availabilityEnd: { type: Date, default: null },
     isLocked: {
       type: Boolean,
       default: false,

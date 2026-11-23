@@ -15,10 +15,10 @@ the remaining reliability work in
   before coding. Keep its acceptance condition.
 - Never mark a task complete because code exists only on an unmerged branch.
 
-**Current:** M04.1 — stop local loops after a match (pending PR merge).
-**Next:** M04.2 — remaining cancellation, replacement, and claim races.
+**Current:** M09b.1 — time-zone-aware backend matching (pending PR merge).
+**Next:** M09b.2 — mobile time-zone selection and integration.
 **Blocked:** M03.2.2 needs resource guards; the 100-user exploratory burst
-left all searches unresolved.
+left all searches unresolved. M04.2 claim and replacement races remain.
 
 M01's [search contract](search-contract.md) describes the target guarantees
 and identifies current gaps.
@@ -59,8 +59,10 @@ and identifies current gaps.
 - [ ] **M04 Stop stale work.** Stop both users' search timers or jobs after a
   match. Test concurrent loops, timeout, cancellation, and replacement.
   **Done when:** a matched search cannot emit another result or timeout.
-  - [ ] **M04.1 Local loops:** stop local timers and ignore results from in-flight comparisons
-    after a pair claim succeeds.
+  - [x] **M04.1 Local loops:** stop local timers and ignore results from in-flight comparisons
+    after a pair claim succeeds. Merged in
+    [PR #34](https://github.com/Subhom1/clickmate-backend/pull/34) as
+    `08b4440874b28277ffca2daf46c6c65db011e84f`.
   - [ ] **M04.2 Remaining races:** protect cancellation, replacement, and
     timeout work that overlaps an in-progress pair claim.
 - [ ] **M05 Search identity.** Give each search attempt a unique ID or
@@ -88,6 +90,10 @@ and identifies current gaps.
   flexibility, store an unambiguous UTC interval, and keep old clients
   compatible during rollout. **Done when:** time overlap works across
   timezones.
+  - [ ] **M09b.1 Backend:** validate an explicit zone and offset, normalize
+    UTC windows, and compare them symmetrically.
+  - [ ] **M09b.2 Mobile:** send the selected time zone and offset, handle
+    daylight-saving ambiguity, and verify on both platforms.
 - [ ] **M10 Activity mode.** Support online or nearby mode and location only
   where the activity needs it. **Done when:** in-person and online requests
   are filtered correctly without making the form heavy.
@@ -181,7 +187,8 @@ and identifies current gaps.
 | 2026-11-15 | M09a | `feature/search-date-time` | [PR #28](https://github.com/Subhom1/clickmate-backend/pull/28), merged `d653d17099a15d78fb0cc8718fe939692d6b8c75` | 46 focused tests passed; `npm test` passed (195 tests and syntax); `git diff --check` passed | M01 |
 | 2026-11-16 | M01 | `docs/search-contract-m01` | [PR #29](https://github.com/Subhom1/clickmate-backend/pull/29), merged `5792441f17b8c7b09794052718bfc7467933af36` | `git diff --check`: passed; GitHub backend regression and coverage check passed | M02 |
 | 2026-11-17 | M02.1 | `feat/search-metrics-m02-1` | [PR #30](https://github.com/Subhom1/clickmate-backend/pull/30) merged `b1cdc23dbbc122f9cc98573d072a1db6e7532ba8` | `node --experimental-test-module-mocks --test tests/unit/services/searchService.test.js`: 11 passed; `npm test`: 197 passed and syntax check passed with loopback access | M02.2 |
-| 2026-11-23 | M04.1 | `fix/search-match-timers-m04-1` | [PR #34](https://github.com/Subhom1/clickmate-backend/pull/34) open | Focused search tests: 16 passed; `npm test`: 210 passed and syntax passed; 10-user burst: 10 matches, 0 extra updates | M04.2 claim, cancellation, and replacement races remain |
+| 2026-11-23 | M09b.1 | `feat/search-timezone-m09b` | PR pending | Focused timezone/socket/search tests: 47 passed; `npm test`: 220 passed, 1 integration test skipped, syntax passed; `RUN_MONGODB_INTEGRATION=1 node --test tests/integration/searchTimezone.test.js`: 1 passed | M09b.2 mobile integration and platform verification remain |
+| 2026-11-23 | M04.1 | `fix/search-match-timers-m04-1` | [PR #34](https://github.com/Subhom1/clickmate-backend/pull/34) merged `08b4440874b28277ffca2daf46c6c65db011e84f` | Focused search tests: 16 passed; `npm test`: 210 passed and syntax passed; 10-user burst: 10 matches, 0 extra updates | M04.2 claim, cancellation, and replacement races remain |
 | 2026-11-23 | M03.2.1 | `feat/load-harness-m03-2` | [PR #33](https://github.com/Subhom1/clickmate-backend/pull/33) merged `f76ec220de665a7386480d2b7cb89d1b54a9be51` | `npm test`: 206 passed and syntax passed; `npm run test:coverage`: passed; local 2, 10, 100-user bursts completed | 100 unresolved at 45s; M03.2.2 needs resource guards |
 | 2026-11-19 | M03.1 | `feat/baseline-report-m03-1` | [PR #32](https://github.com/Subhom1/clickmate-backend/pull/32) merged `ad28fb125b7646c7b4066858496ccbde5cafcfd0` | `node --test tests/unit/load/report.test.js`: 3 passed; `npm test`: 204 passed and syntax check passed; `git diff --check`: passed | M03.2 needs isolated test infrastructure |
 | 2026-11-18 | M02.2 | `feat/worker-metrics-m02-2` | [PR #31](https://github.com/Subhom1/clickmate-backend/pull/31) merged `45969b11a7f564b69da2e166a90ebe1c895344b9` | Focused service and worker tests: 27 passed; `npm test`: 201 passed and syntax checks passed with loopback access; `git diff --check`: passed | M03 |
@@ -210,3 +217,9 @@ here with a PR or discussion link. Do not silently drop a roadmap item.
 - **2026-11-23, M04:** Prioritized stale local search work after exploratory
   load tests exposed duplicate updates. Split stopping local loops from the
   remaining claim, timeout, and replacement races; M04 remains incomplete.
+
+- **2026-11-23, M09b:** Prioritized timezone-aware availability at the user’s
+  request. Zoned searches use UTC windows and reject incompatible offsets; a
+  legacy constrained schedule is not compared with a zoned one because its
+  timezone is unknown. Text-only searches remain unrestricted. Backend and
+  mobile rollout are separate; M09b remains open until both are verified.

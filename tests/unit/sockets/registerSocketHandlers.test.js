@@ -268,3 +268,16 @@ test("sendMessage accepts content at the 5,000-character boundary", async () => 
   assert.equal(calls.savedMessages.length, 1);
   assert.equal(calls.savedMessages[0][1].content.length, 5000);
 });
+
+test("submit_keyword validates a zoned schedule before starting search", async () => {
+  const { socket } = await setupConnectedSocket();
+  const valid = { userId, query: "walk", date: "2028-01-15", time: "20:00", timeZone: "America/New_York", utcOffsetMinutes: -300 };
+  await socket.handlers.submit_keyword(valid);
+  assert.deepEqual(calls.starts[0][3], { date: valid.date, time: valid.time, timeZone: valid.timeZone, utcOffsetMinutes: valid.utcOffsetMinutes });
+  await socket.handlers.submit_keyword({ ...valid, utcOffsetMinutes: 480 });
+  await socket.handlers.submit_keyword({ ...valid, time: undefined });
+  await socket.handlers.submit_keyword({ ...valid, timeZone: "Invalid/Zone" });
+  assert.equal(calls.starts.length, 1);
+  assert.equal(socket.emitted.length, 3);
+  assert.ok(socket.emitted.every((event) => event.name === "error" || event.event === "error"));
+});

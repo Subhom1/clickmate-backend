@@ -32,10 +32,25 @@ console.log(JSON.stringify(searchService.getMetricsReport(), null, 2));
 An authenticated socket submits `submit_keyword` with its own `userId`, a
 nonempty `query` (at most 500 characters after whitespace normalization), and
 optional `date` (`YYYY-MM-DD`) and `time` (`HH:mm`). Missing schedule fields
-are unrestricted. Today, two supplied dates must agree and two supplied times
-must be within 60 minutes. These are activity preferences, never profile
-birthdates; timezone-aware intervals are deferred to M09b. Invalid requests
-produce an `error` event and do not start a search.
+are unrestricted. Legacy clients that omit zone information use the existing
+rule: two supplied dates must agree and two supplied times must be within 60
+minutes. Clients can additionally submit `timeZone` (an IANA zone) and
+`utcOffsetMinutes` (integer minutes east of UTC) when both date and time are
+present. The offset must be valid for that zone and local date/time; it selects
+an occurrence when a clock time repeats during a daylight-saving transition.
+Nonexistent local times, incomplete zone information and mismatched offsets are
+rejected. Each accepted zoned time becomes a UTC interval from 30 minutes
+before to 30 minutes after the selected instant; zoned intervals match when
+they overlap, including a touching boundary. This preserves the previous
+60-minute tolerance while allowing matches across time zones and dates.
+
+A legacy text-only search can match either kind of search. A legacy search
+that provides date or time cannot match a zoned search, because its time zone
+is unknown; two legacy searches retain their existing rules. These are activity
+preferences, never profile birthdates. All backend instances must understand
+these fields before clients send them. Interval-query performance and indexing
+have not been established at load. Invalid requests produce an `error` event
+and do not start a search.
 
 Today `search_update` reports either `matches` containing the other user's
 profile and a similarity score, or `matches: null` when no result is found.
