@@ -72,9 +72,10 @@ export const createSearchService = (io, similarityService) => {
     if (currentSearch) metrics.cancellations++;
     if (currentSearch?.timer) clearTimeout(currentSearch.timer);
     currentSearch?.cancel?.();
-    await UserSearch.deleteOne({ userId });
-    await unlockUser(userId);
-    ongoingSearches.delete(userId);
+    // A delayed cleanup must not delete a later locally tracked attempt.
+    const filter = currentSearch?.searchId ? { userId, searchId: currentSearch.searchId } : { userId };
+    await UserSearch.deleteOne(filter);
+    if (ongoingSearches.get(userId) === currentSearch) ongoingSearches.delete(userId);
   };
 
   const lockMatchPair = async (userId, otherUserId) => {

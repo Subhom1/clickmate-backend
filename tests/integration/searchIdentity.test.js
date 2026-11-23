@@ -28,3 +28,50 @@ test('sequential search attempts persist distinct identities in MongoDB', { skip
     finally { await mongoose.disconnect(); await replica.stop(); }
   }
 });
+
+test('delayed cleanup cannot delete or unlock a newer local attempt in MongoDB', { skip: !enabled }, async () => {
+  const replica = await MongoMemoryReplSet.create({ replSet: { count: 1, ip: '127.0.0.1' } });
+  const originalDelete = Search.deleteOne;
+  let service, id, pendingCleanup, releaseDelete;
+  try {
+    await mongoose.connect(replica.getUri('clickmate_cleanup_test'));
+    await Search.init();
+    id = new mongoose.Types.ObjectId().toString();
+    service = createSearchService({ to: () => ({ emit() {} }) }, { compare: async () => ({ similarity_score: 0 }) });
+    await service.startSearch(id, 'old', { id: 'old-socket' });
+    const old = await Search.findOne({ userId: id }).lean();
+    let markDeleteStarted;
+    const deleteStarted = new Promise((resolve) => { markDeleteStarted = resolve; });
+    const gate = new Promise((resolve) => { releaseDelete = resolve; });
+    let first = true;
+    Search.deleteOne = function (...args) {
+      if (first) {
+        first = false;
+        markDeleteStarted();
+        return gate.then(() => originalDelete.apply(this, args));
+      }
+      return originalDelete.apply(this, args);
+    };
+    pendingCleanup = service.cleanupSearch(id);
+    await deleteStarted;
+    await service.startSearch(id, 'new', { id: 'new-socket' });
+    const next = await Search.findOne({ userId: id }).lean();
+    assert.notEqual(next.searchId, old.searchId);
+    await Search.updateOne({ userId: id, searchId: next.searchId }, { $set: { isLocked: true } });
+    releaseDelete();
+    await pendingCleanup;
+    const after = await Search.findOne({ userId: id }).lean();
+    assert.equal(after?.searchId, next.searchId);
+    assert.equal(after?.isLocked, true);
+    assert.equal(service.getMetrics().activeSearches, 1);
+    await service.cleanupSocketSearches('new-socket');
+    assert.equal(await Search.countDocuments({ userId: id }), 0);
+    assert.equal(service.getMetrics().activeSearches, 0);
+  } finally {
+    releaseDelete?.();
+    if (pendingCleanup) await pendingCleanup.catch(() => {});
+    Search.deleteOne = originalDelete;
+    try { if (service && id) await service.cleanupSocketSearches('new-socket'); }
+    finally { await mongoose.disconnect(); await replica.stop(); }
+  }
+});

@@ -65,10 +65,14 @@ New searches are assigned a server-generated UUID that is stored in the search
 record and its local process entry. Existing records may lack an ID, and older
 backend instances can continue to create them during a mixed-version rollout;
 an older writer may also retain an ID on a different attempt. Concurrent new
-writers can leave a local ID out of sync with the persisted record. The ID is not yet sent to clients or used to condition locks, cleanup, or
-notifications. It does not prevent stale work or establish ordering between
-concurrent requests; M05 and the remaining lifecycle guarantees below are
-incomplete. All writers must understand identity before it can be relied on.
+writers can leave a local ID out of sync with the persisted record. Locally
+tracked cleanup now deletes only the captured attempt ID and removes the local
+entry only if it still refers to that attempt. IDs are not yet sent to clients.
+Cleanup no longer performs a user-only unlock after deleting a record. Cleanup without a local ID still
+uses a user-only fallback. Locks, timeout, replacement, and notifications are
+not yet guarded by the ID. This does not establish ordering or prevent stale
+work across concurrent requests and instances; mixed-version writers can
+reuse an old ID. M05 and the lifecycle guarantees below remain incomplete.
 
 ## Lifecycle guarantees to implement
 
