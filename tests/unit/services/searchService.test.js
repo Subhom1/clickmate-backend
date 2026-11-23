@@ -179,7 +179,7 @@ test("search continues polling when the other participant cannot be locked", asy
     await service.startSearch(aliceId, "query", { id: "socket-a" });
     await scheduled.shift().callback();
     assert.equal(io.events.length, 0);
-    assert.ok(calls.locks.some(([filter, update]) => filter.userId === aliceId && update.isLocked === false));
+    assert.ok(calls.locks.some(([filter, update]) => filter._id === aliceId && filter.isLocked === true && update.isLocked === false));
     assert.equal(scheduled.length, 1);
     assert.equal(scheduled[0].timer.delay, 1000);
   });
@@ -314,6 +314,9 @@ test("profile lookup failure after a pair claim still reports an error", async (
     console.error = () => {};
     try { await scheduled[0].callback(); } finally { console.error = original; }
     assert.deepEqual(io.events, [{ room: `user:${aliceId}`, name: "error", payload: { message: "An error occurred while checking for matches." } }]);
+    assert.deepEqual(calls.locks.filter(([filter]) => filter._id).map(([filter]) => filter), [
+      { _id: aliceId, isLocked: true }, { _id: bobId, isLocked: true },
+    ]);
   });
 });
 
