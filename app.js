@@ -77,7 +77,7 @@ const startServer = async () => {
     avatarCleanupTimer.unref();
   }
   console.log("Similarity worker ready");
-  server.listen(config.port, () => console.log(`Server is running on port ${config.port}`));
+  server.listen(config.port, config.listenHost, () => console.log(`Server is running on port ${config.port}`));
 };
 
 startServer().catch((error) => {

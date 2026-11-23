@@ -57,6 +57,7 @@ Create a local `.env` file from `.env.example`:
 | `FIREBASE_SERVICE_ACCOUNT_PATH` | One credential option | Path to the Firebase Admin service-account JSON. |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | One credential option | Complete service-account JSON, useful with a secret manager. |
 | `PORT` | No | HTTP port; defaults to `5051`. |
+| `LISTEN_HOST` | No | HTTP bind address; leave unset for the platform default, or use `127.0.0.1` for local-only testing. |
 | `PYTHON_BIN` | No | Worker Python executable; defaults to `python3`. |
 | `SOCKET_ADAPTER_ENABLED` | No | Defaults to enabled; set `false` for a single-process local setup. |
 | `RATE_LIMIT_WINDOW_MS` | No | HTTP rate-limit window; defaults to 15 minutes. |

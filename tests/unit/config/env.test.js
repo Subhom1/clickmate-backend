@@ -73,6 +73,7 @@ test("configuration parses comma-separated origins and numeric overrides", async
     MONGODB_URI: "mongodb://localhost/clickmate_test",
     CORS_ORIGIN: " https://one.example, https://two.example ",
     PORT: "6060",
+    LISTEN_HOST: "127.0.0.1",
     RATE_LIMIT_WINDOW_MS: "60000",
     RATE_LIMIT_MAX: "25",
   });
@@ -81,6 +82,7 @@ test("configuration parses comma-separated origins and numeric overrides", async
   const config = JSON.parse(result.stdout);
   assert.deepEqual(config.allowedOrigins, ["https://one.example", "https://two.example"]);
   assert.equal(config.port, "6060");
+  assert.equal(config.listenHost, "127.0.0.1");
   assert.equal(config.rateLimitWindowMs, 60000);
   assert.equal(config.rateLimitMax, 25);
 });

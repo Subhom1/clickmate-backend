@@ -1,0 +1,28 @@
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { homedir } from 'node:os';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import mongoose from 'mongoose';
+const { MongoClient } = mongoose.mongo;
+import { fileURLToPath } from 'node:url';
+const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const dir = process.argv[2];
+if (!dir || !path.isAbsolute(dir)) throw new Error('Pass the absolute temporary directory printed by start-local.js');
+const runtime = JSON.parse(readFileSync(path.join(dir, 'runtime.json'), 'utf8'));
+if (!/^mongodb:\/\/127\.0\.0\.1:27028\/clickmate_load_test\?replicaSet=testset$/.test(runtime.uri)) throw new Error('Unexpected test database URI');
+const client = new MongoClient(runtime.uri, { serverSelectionTimeoutMS: 3000 });
+try { await client.connect(); if (!await client.db('clickmate_load_test').collection('_setup_check').findOne({ marker: runtime.marker })) throw new Error('Test database marker missing'); } finally { await client.close(); }
+const cache = path.join(homedir(), '.cache/huggingface/hub/models--sentence-transformers--paraphrase-mpnet-base-v2');
+const revision = readFileSync(path.join(cache, 'refs/main'), 'utf8').trim();
+if (!/^[a-f0-9]{40}$/.test(revision)) throw new Error('Invalid cached model revision');
+const modelPath = path.join(cache, 'snapshots', revision);
+const source = readFileSync(path.join(repo, 'scripts/similarity_worker.py'), 'utf8');
+const needle = 'SentenceTransformer("paraphrase-mpnet-base-v2")';
+if (!source.includes(needle)) throw new Error('Worker model initialization changed; review test launcher');
+mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+writeFileSync(path.join(dir, 'scripts/similarity_worker.py'), source.replace(needle, `SentenceTransformer(${JSON.stringify(modelPath)})`));
+const env = { PATH: process.env.PATH, HOME: dir, MONGODB_URI: 'mongodb://127.0.0.1:27028/clickmate_load_test?replicaSet=testset', FIREBASE_AUTH_EMULATOR_HOST: '127.0.0.1:19099', FIREBASE_SERVICE_ACCOUNT_PATH: path.join(dir, 'test-service-account.json'), GOOGLE_CLOUD_PROJECT: 'demo-clickmate-local-test', PORT: '15051', LISTEN_HOST: '127.0.0.1', HUGGINGFACE_HUB_CACHE: path.join(homedir(), '.cache/huggingface/hub'), HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1', SOCKET_ADAPTER_ENABLED: 'true' };
+const child = spawn(process.execPath, [path.join(repo, 'app.js')], { cwd: dir, env, stdio: 'inherit' });
+process.on('SIGINT', () => child.kill('SIGINT'));
+process.on('SIGTERM', () => child.kill('SIGTERM'));
+child.on('exit', (code) => process.exit(code ?? 1));
