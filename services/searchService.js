@@ -76,6 +76,7 @@ export const createSearchService = (io, similarityService) => {
     const similarityCache = new Map();
     const cancel = () => { cancelled = true; if (timer) clearTimeout(timer); };
     const scheduleNextCheck = () => {
+      if (cancelled) return;
       timer = setTimeout(checkForMatches, CHECK_INTERVAL);
       const search = ongoingSearches.get(userId);
       if (search) search.timer = timer;
@@ -91,10 +92,12 @@ export const createSearchService = (io, similarityService) => {
           isLocked: false, userId: { $ne: userId }, ...scheduleFilter(schedule),
         })
           .sort({ created_at: 1 }).lean();
+        if (cancelled) return;
         metrics.candidates += candidates.length;
         let bestMatch = null;
         let highestSimilarity = 0;
         for (const candidate of candidates) {
+          if (cancelled) return;
           if (!scheduleMatches(schedule, candidate)) continue;
           const otherUserId = candidate.userId.toString();
           try {
@@ -116,17 +119,23 @@ export const createSearchService = (io, similarityService) => {
           }
         }
 
-        if (bestMatch && highestSimilarity >= MINIMUM_SIMILARITY && !cancelled) {
+        if (cancelled) return;
+        if (bestMatch && highestSimilarity >= MINIMUM_SIMILARITY) {
           if (!await lockMatchPair(userId, bestMatch)) {
             metrics.failedPairClaims++;
             return scheduleNextCheck();
           }
+          // Read both profiles before stopping the partner loop or notifying either user.
+          const user = await UserDetail.findOne({ _id: userId });
+          const partner = await UserDetail.findOne({ _id: bestMatch });
+          ongoingSearches.get(bestMatch)?.cancel?.();
+          clearTimeout(timer);
           io.to(userRoom(bestMatch)).emit("search_update", {
-            matches: { user: await UserDetail.findOne({ _id: userId }), similarity: highestSimilarity },
+            matches: { user, similarity: highestSimilarity },
             message: "Search result found",
           });
           io.to(userRoom(userId)).emit("search_update", {
-            matches: { user: await UserDetail.findOne({ _id: bestMatch }), similarity: highestSimilarity },
+            matches: { user: partner, similarity: highestSimilarity },
             message: "Search result found",
           });
           await UserSearch.deleteOne({ userId });
@@ -149,6 +158,7 @@ export const createSearchService = (io, similarityService) => {
         await unlockUser(userId);
         ongoingSearches.delete(userId);
       } catch (error) {
+        if (cancelled) return;
         console.error("Error during match checking:", error);
         io.to(userRoom(userId)).emit("error", { message: "An error occurred while checking for matches." });
         await unlockUser(userId);
