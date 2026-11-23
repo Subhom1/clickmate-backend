@@ -8,6 +8,7 @@ let candidates;
 let findError;
 let lockResults;
 let userFindError;
+let deleteHook;
 const userSearch = {
   findOneAndUpdate: async (...args) => {
     if (args[0]?.isLocked?.$ne === true) {
@@ -18,7 +19,10 @@ const userSearch = {
     else calls.upserts.push(args);
     return { acknowledged: true };
   },
-  deleteOne: async (...args) => { calls.deletes.push(args); return { deletedCount: 1 }; },
+  deleteOne: async (...args) => {
+    calls.deletes.push(args);
+    return deleteHook ? deleteHook(...args) : { deletedCount: 1 };
+  },
   find: (...args) => {
     calls.searches.push(args);
     return { sort() { return this; }, lean: async () => { if (findError) throw findError; return candidates; } };
@@ -62,6 +66,7 @@ beforeEach(() => {
   candidates = [];
   findError = null;
   userFindError = null;
+  deleteHook = null;
   lockResults = [{ _id: aliceId }, { _id: bobId }];
 });
 
@@ -143,15 +148,61 @@ test("text-only searches remain compatible with optional schedules", async () =>
   });
 });
 
-test("cleanupSearch cancels its timer, removes its search record, and unlocks its user", async () => {
+test("cleanupSearch cancels its timer and deletes only its search record", async () => {
   await fakeTimers(async ({ scheduled, cleared }) => {
     const service = createSearchService(makeIO(), { compare: async () => ({ similarity_score: 0 }) });
     await service.startSearch(aliceId, "query", { id: "socket-a" });
     await service.cleanupSearch(aliceId);
     assert.ok(cleared.length >= 1);
     assert.ok(cleared.every((timer) => timer === scheduled[0].timer));
-    assert.ok(calls.deletes.some(([filter]) => filter.userId === aliceId));
-    assert.ok(calls.locks.some(([filter, update]) => filter.userId === aliceId && update.isLocked === false));
+    const searchId = calls.upserts[0][1].searchId;
+    assert.ok(calls.deletes.some(([filter]) => filter.userId === aliceId && filter.searchId === searchId));
+    assert.equal(calls.locks.length, 0, "deleting a search must not unlock a newer one");
+  });
+});
+
+test("delayed cleanup of an old search preserves the newer record and local entry", async () => {
+  await fakeTimers(async () => {
+    const service = createSearchService(makeIO(), { compare: async () => ({ similarity_score: 0 }) });
+    await service.startSearch(aliceId, "old", { id: "old-socket" });
+    const oldId = calls.upserts[0][1].searchId;
+    let row = { userId: aliceId, searchId: oldId, isLocked: false };
+    let releaseDelete;
+    const blocked = new Promise((resolve) => { releaseDelete = resolve; });
+    let deleteCalls = 0;
+    deleteHook = async (filter) => {
+      deleteCalls++;
+      if (deleteCalls === 1) await blocked;
+      const matches = row && row.userId === filter.userId &&
+        (filter.searchId === undefined || row.searchId === filter.searchId);
+      if (matches) row = null;
+      return { deletedCount: matches ? 1 : 0 };
+    };
+    calls.locks.length = 0;
+    const oldCleanup = service.cleanupSearch(aliceId);
+    await service.startSearch(aliceId, "new", { id: "new-socket" });
+    const newId = calls.upserts[1][1].searchId;
+    row = { userId: aliceId, searchId: newId, isLocked: true };
+    releaseDelete();
+    await oldCleanup;
+
+    assert.deepEqual(calls.deletes.at(-2)[0], { userId: aliceId, searchId: oldId });
+    assert.notEqual(newId, oldId);
+    assert.deepEqual(row, { userId: aliceId, searchId: newId, isLocked: true });
+    assert.equal(calls.locks.length, 0, "cleanup must not unlock the replacement");
+    assert.equal(service.getMetrics().activeSearches, 1);
+    await service.cleanupSocketSearches("new-socket");
+    assert.equal(service.getMetrics().activeSearches, 0, "new socket must still own its search");
+    assert.equal(row, null);
+  });
+});
+
+test("cleanup without a local search retains the legacy user-only fallback", async () => {
+  await fakeTimers(async () => {
+    const service = createSearchService(makeIO(), { compare: async () => ({ similarity_score: 0 }) });
+    await service.cleanupSearch(aliceId);
+    assert.deepEqual(calls.deletes, [[{ userId: aliceId }]]);
+    assert.equal(calls.locks.length, 0);
   });
 });
 
