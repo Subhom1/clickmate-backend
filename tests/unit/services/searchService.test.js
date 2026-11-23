@@ -73,7 +73,7 @@ test("startSearch persists text with optional date and time", async () => {
     await service.startSearch(aliceId, "quiet forest", socket, { date: "2028-02-29", time: "14:30" });
     assert.deepEqual(calls.upserts, [[
       { userId: aliceId },
-      { query: "quiet forest", date: "2028-02-29", time: "14:30", created_at: calls.upserts[0][1].created_at, isLocked: false },
+      { query: "quiet forest", date: "2028-02-29", time: "14:30", timeZone: null, utcOffsetMinutes: null, availabilityStart: null, availabilityEnd: null, created_at: calls.upserts[0][1].created_at, isLocked: false },
       { upsert: true, runValidators: true },
     ]]);
     assert.ok(calls.upserts[0][1].created_at instanceof Date);
@@ -107,6 +107,7 @@ test("scheduled search filters by shared date and nearby time before comparing t
     assert.deepEqual(calls.searches[0][0], {
       isLocked: false,
       userId: { $ne: aliceId },
+      availabilityStart: null,
       $and: [
         { $or: [{ date: "2028-02-29" }, { date: null }] },
         { $or: [{ time: { $gte: "13:30", $lte: "15:30" } }, { time: null }] },
@@ -331,5 +332,59 @@ test("a failed profile lookup leaves the partner's local search running", async 
     assert.deepEqual(io.events.map(({ room }) => room), [`user:${aliceId}`]);
     assert.equal(io.events[0].name, "error");
     assert.equal(service.getMetrics().activeSearches, 1);
+  });
+});
+
+test("timezone-aware searches compare UTC windows across calendar dates in both directions", async () => {
+  for (const [self, other] of [
+    [{ date: '2028-01-15', time: '20:00', timeZone: 'America/New_York', utcOffsetMinutes: -300 },
+      { date: '2028-01-16', time: '09:00', timeZone: 'Asia/Singapore', utcOffsetMinutes: 480 }],
+    [{ date: '2028-01-16', time: '09:00', timeZone: 'Asia/Singapore', utcOffsetMinutes: 480 },
+      { date: '2028-01-15', time: '20:00', timeZone: 'America/New_York', utcOffsetMinutes: -300 }],
+  ]) {
+    await fakeTimers(async ({ scheduled }) => {
+      calls.searches.length = 0;
+      lockResults = [{ _id: aliceId }, { _id: bobId }];
+      candidates = [{ userId: bobId, query: 'same activity', ...other,
+        availabilityStart: new Date('2028-01-16T00:30:00Z'), availabilityEnd: new Date('2028-01-16T01:30:00Z'), created_at: new Date() }];
+      const io = makeIO();
+      let comparisons = 0;
+      const service = createSearchService(io, { compare: async () => { comparisons++; return { similarity_score: 0.9 }; } });
+      await service.startSearch(aliceId, 'same activity', { id: 'socket-a' }, self);
+      await scheduled[0].callback();
+      assert.equal(comparisons, 1);
+      assert.equal(io.events.length, 2);
+      assert.deepEqual(calls.searches[0][0].$or, [
+        { availabilityStart: { $lte: new Date('2028-01-16T01:30:00Z') }, availabilityEnd: { $gte: new Date('2028-01-16T00:30:00Z') } },
+        { availabilityStart: null, date: null, time: null },
+      ]);
+    });
+  }
+});
+
+test("zoned and legacy constrained schedules are excluded symmetrically before scoring", async () => {
+  const zoned = { date: '2028-01-15', time: '20:00', timeZone: 'America/New_York', utcOffsetMinutes: -300,
+    availabilityStart: new Date('2028-01-16T00:30:00Z'), availabilityEnd: new Date('2028-01-16T01:30:00Z') };
+  const legacy = { date: '2028-01-15', time: '20:00' };
+  for (const [self, other] of [[zoned, legacy], [legacy, zoned]]) {
+    await fakeTimers(async ({ scheduled }) => {
+      candidates = [{ userId: bobId, query: 'same activity', ...other, created_at: new Date() }];
+      let comparisons = 0;
+      const service = createSearchService(makeIO(), { compare: async () => { comparisons++; return { similarity_score: 0.9 }; } });
+      await service.startSearch(aliceId, 'same activity', { id: 'socket-a' }, self);
+      await scheduled[0].callback();
+      assert.equal(comparisons, 0);
+    });
+  }
+});
+
+test("a zoned search can match a text-only legacy search", async () => {
+  await fakeTimers(async ({ scheduled }) => {
+    candidates = [{ userId: bobId, query: 'same activity', date: null, time: null, created_at: new Date() }];
+    let comparisons = 0;
+    const service = createSearchService(makeIO(), { compare: async () => { comparisons++; return { similarity_score: 0.9 }; } });
+    await service.startSearch(aliceId, 'same activity', { id: 'socket-a' }, { date: '2028-01-15', time: '20:00', timeZone: 'America/New_York', utcOffsetMinutes: -300 });
+    await scheduled[0].callback();
+    assert.equal(comparisons, 1);
   });
 });

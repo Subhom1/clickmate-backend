@@ -1,4 +1,5 @@
 import Chat from "../models/ChatScema.js";
+import { searchAvailability } from "../utils/searchAvailability.js";
 import UserDetail from "../models/UserDetailSchema.js";
 import { admin } from "../middleware/auth.js";
 import { normalizeEmail, isValidObjectId, isValidSearchDate, isValidSearchTime } from "../utils/validation.js";
@@ -39,7 +40,7 @@ export const registerSocketHandlers = (io, searchService) => {
       return entry.count <= max;
     };
 
-    socket.on("submit_keyword", async ({ userId, query, date, time } = {}) => {
+    socket.on("submit_keyword", async ({ userId, query, date, time, timeZone, utcOffsetMinutes } = {}) => {
       if (!eventAllowed("search", 10)) return socket.emit("error", { message: "Too many searches; try again later." });
       const normalizedQuery = typeof query === "string" ? query.trim().replace(/\s+/g, " ") : "";
       const authenticatedUserId = socket.user._id.toString();
@@ -49,7 +50,16 @@ export const registerSocketHandlers = (io, searchService) => {
       if (normalizedQuery.length > 500) return socket.emit("error", { message: "Search query is too long." });
       if (date != null && !isValidSearchDate(date)) return socket.emit("error", { message: "Invalid date. Use YYYY-MM-DD." });
       if (time != null && !isValidSearchTime(time)) return socket.emit("error", { message: "Invalid time. Use HH:mm." });
-      try { await searchService.startSearch(userId, normalizedQuery, socket, { date: date ?? null, time: time ?? null }); }
+      const schedule = { date: date ?? null, time: time ?? null };
+      if (timeZone != null || utcOffsetMinutes != null) {
+        try {
+          searchAvailability({ date, time, timeZone, utcOffsetMinutes });
+          Object.assign(schedule, { timeZone, utcOffsetMinutes });
+        } catch {
+          return socket.emit("error", { message: "Invalid time zone or local time and UTC offset." });
+        }
+      }
+      try { await searchService.startSearch(userId, normalizedQuery, socket, schedule); }
       catch (error) { console.error("Error during search submission:", error); socket.emit("error", { message: "An error occurred during the search." }); }
     });
 
