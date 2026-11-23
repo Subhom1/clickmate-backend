@@ -7,6 +7,7 @@ const calls = { upserts: [], deletes: [], locks: [], searches: [], users: [] };
 let candidates;
 let findError;
 let lockResults;
+let userFindError;
 const userSearch = {
   findOneAndUpdate: async (...args) => {
     if (args[0]?.isLocked?.$ne === true) {
@@ -24,7 +25,7 @@ const userSearch = {
   },
 };
 const userDetail = {
-  findOne: async (...args) => { calls.users.push(args); return { _id: args[0]._id, name: "matched user" }; },
+  findOne: async (...args) => { calls.users.push(args); if (userFindError) throw userFindError; return { _id: args[0]._id, name: "matched user" }; },
 };
 const nodeMajorVersion = Number(process.versions.node.split(".")[0]);
 const defaultMock = (value) => nodeMajorVersion >= 26 ? { exports: { default: value } } : { defaultExport: value };
@@ -60,6 +61,7 @@ beforeEach(() => {
   for (const list of Object.values(calls)) list.length = 0;
   candidates = [];
   findError = null;
+  userFindError = null;
   lockResults = [{ _id: aliceId }, { _id: bobId }];
 });
 
@@ -242,5 +244,92 @@ test("search reports a stable error and unlocks its user if candidate lookup fai
     try { await scheduled.shift().callback(); } finally { console.error = original; }
     assert.deepEqual(io.events, [{ room: `user:${aliceId}`, name: "error", payload: { message: "An error occurred while checking for matches." } }]);
     assert.ok(calls.locks.some(([filter, update]) => filter.userId === aliceId && update.isLocked === false));
+  });
+});
+
+test("a committed match stops the other user's in-flight search and timer", async () => {
+  await fakeTimers(async ({ scheduled, cleared }) => {
+    candidates = [{ userId: bobId, query: "a quiet forest", created_at: new Date() }];
+    let releaseComparison;
+    let comparisons = 0;
+    const pending = new Promise((resolve) => { releaseComparison = resolve; });
+    const io = makeIO();
+    const service = createSearchService(io, {
+      compare: async () => {
+        comparisons++;
+        return comparisons === 1 ? pending : { similarity_score: 0.9 };
+      },
+    });
+    await service.startSearch(aliceId, "forest", { id: "socket-a" });
+    await service.startSearch(bobId, "forest", { id: "socket-b" });
+    const aliceTimer = scheduled[0];
+    const bobTimer = scheduled[1];
+    const inFlight = bobTimer.callback();
+    await Promise.resolve();
+    await Promise.resolve();
+    await aliceTimer.callback();
+    assert.equal(io.events.length, 2);
+    assert.ok(cleared.includes(bobTimer.timer));
+    releaseComparison({ similarity_score: 0.9 });
+    await inFlight;
+    assert.equal(io.events.length, 2);
+    assert.equal(scheduled.length, 2, "cancelled work must not schedule another check");
+    assert.equal(service.getMetrics().timeouts, 0);
+  });
+});
+
+test("cancellation during the final comparison cannot emit or delete again", async () => {
+  await fakeTimers(async ({ scheduled }) => {
+    candidates = [{ userId: bobId, query: "candidate", created_at: new Date() }];
+    let releaseComparison;
+    let comparisonStarted;
+    const started = new Promise((resolve) => { comparisonStarted = resolve; });
+    const pending = new Promise((resolve) => { releaseComparison = resolve; });
+    const io = makeIO();
+    const service = createSearchService(io, { compare: async () => { comparisonStarted(); return pending; } });
+    await service.startSearch(aliceId, "query", { id: "socket-a" });
+    const inFlight = scheduled[0].callback();
+    await started;
+    await service.cleanupSearch(aliceId);
+    const deletesAfterCancel = calls.deletes.length;
+    releaseComparison({ similarity_score: 0.9 });
+    await inFlight;
+    assert.equal(io.events.length, 0);
+    assert.equal(calls.deletes.length, deletesAfterCancel);
+    assert.equal(scheduled.length, 1);
+    assert.equal(service.getMetrics().timeouts, 0);
+  });
+});
+
+
+test("profile lookup failure after a pair claim still reports an error", async () => {
+  await fakeTimers(async ({ scheduled }) => {
+    candidates = [{ userId: bobId, query: "candidate", created_at: new Date() }];
+    userFindError = new Error("database unavailable");
+    const io = makeIO();
+    const service = createSearchService(io, { compare: async () => ({ similarity_score: 0.9 }) });
+    await service.startSearch(aliceId, "query", { id: "socket-a" });
+    const original = console.error;
+    console.error = () => {};
+    try { await scheduled[0].callback(); } finally { console.error = original; }
+    assert.deepEqual(io.events, [{ room: `user:${aliceId}`, name: "error", payload: { message: "An error occurred while checking for matches." } }]);
+  });
+});
+
+test("a failed profile lookup leaves the partner's local search running", async () => {
+  await fakeTimers(async ({ scheduled, cleared }) => {
+    candidates = [{ userId: bobId, query: "candidate", created_at: new Date() }];
+    userFindError = new Error("database unavailable");
+    const io = makeIO();
+    const service = createSearchService(io, { compare: async () => ({ similarity_score: 0.9 }) });
+    await service.startSearch(aliceId, "query", { id: "socket-a" });
+    await service.startSearch(bobId, "query", { id: "socket-b" });
+    const original = console.error;
+    console.error = () => {};
+    try { await scheduled[0].callback(); } finally { console.error = original; }
+    assert.ok(!cleared.includes(scheduled[1].timer));
+    assert.deepEqual(io.events.map(({ room }) => room), [`user:${aliceId}`]);
+    assert.equal(io.events[0].name, "error");
+    assert.equal(service.getMetrics().activeSearches, 1);
   });
 });
