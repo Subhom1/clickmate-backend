@@ -75,7 +75,12 @@ attempt retries expiration without restarting candidate comparisons; a missing
 or locally replaced attempt stops without a timeout. The search error path
 unlocks only its captured ID. A permanently locked record can keep retrying,
 and a database failure during expiry can leave a searchable record after the
-local timer stops. Locks acquired by other workers, replacement, and match
+local timer stops. Pair acquisition now checks the initiating ID and the ID
+of the candidate whose text was scored; a failed second claim releases the
+first. Legacy candidates without IDs are matched using a null ID, so older
+writers that reuse or omit IDs can still defeat this check. Claims are not
+ownership tokens: replacement or cancellation after acquisition, rollback,
+and match delivery remain unsafe. Locks acquired by other workers, replacement, and match
 notifications are not fully guarded by attempt identity. A remote replacement
 can occur between deletion and the room event, which has no attempt ID; an
 older mixed-version writer may reuse an ID. This does not establish ordering

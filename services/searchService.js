@@ -59,8 +59,8 @@ export const createSearchService = (io, similarityService) => {
     failedPairClaims: 0, matches: 0, matchLatencyMsTotal: 0, matchLatencyMsMax: 0 };
   const userRoom = (userId) => `user:${userId}`;
 
-  const lockUser = (userId) => UserSearch.findOneAndUpdate(
-    { userId, isLocked: { $ne: true } }, { isLocked: true }, { new: true }
+  const lockUser = (userId, searchId) => UserSearch.findOneAndUpdate(
+    { userId, searchId, isLocked: { $ne: true } }, { isLocked: true }, { new: true }
   );
   const unlockUser = (userId, searchId) => UserSearch.findOneAndUpdate({ userId, searchId }, { isLocked: false });
   const unlockClaim = (claim) => UserSearch.findOneAndUpdate(
@@ -78,10 +78,10 @@ export const createSearchService = (io, similarityService) => {
     if (ongoingSearches.get(userId) === currentSearch) ongoingSearches.delete(userId);
   };
 
-  const lockMatchPair = async (userId, otherUserId) => {
-    const selfLocked = await lockUser(userId);
+  const lockMatchPair = async (userId, searchId, candidate) => {
+    const selfLocked = await lockUser(userId, searchId);
     if (!selfLocked) return false;
-    const otherLocked = await lockUser(otherUserId);
+    const otherLocked = await lockUser(candidate.userId, candidate.searchId ?? null);
     if (otherLocked) return [selfLocked, otherLocked];
     await unlockClaim(selfLocked);
     return false;
@@ -146,7 +146,7 @@ export const createSearchService = (io, similarityService) => {
           const otherUserId = candidate.userId.toString();
           try {
             const timestamp = candidate.created_at ? new Date(candidate.created_at).getTime() : 0;
-            const cacheKey = `${otherUserId}:${timestamp}`;
+            const cacheKey = `${otherUserId}:${candidate.searchId ?? "legacy"}:${timestamp}`;
             let result = similarityCache.get(cacheKey);
             if (!result) {
               metrics.comparisons++;
@@ -155,7 +155,7 @@ export const createSearchService = (io, similarityService) => {
             similarityCache.set(cacheKey, result);
             if (typeof result.similarity_score !== "number") continue;
             if (result.similarity_score > highestSimilarity) {
-              bestMatch = otherUserId;
+              bestMatch = candidate;
               highestSimilarity = result.similarity_score;
             }
           } catch (error) {
@@ -165,12 +165,13 @@ export const createSearchService = (io, similarityService) => {
 
         if (cancelled) return;
         if (bestMatch && highestSimilarity >= MINIMUM_SIMILARITY) {
-          claims = await lockMatchPair(userId, bestMatch);
+          claims = await lockMatchPair(userId, searchId, bestMatch);
           if (!claims) {
             metrics.failedPairClaims++;
             return scheduleNextCheck();
           }
           // Read both profiles before stopping the partner loop or notifying either user.
+          bestMatch = bestMatch.userId.toString();
           const user = await UserDetail.findOne({ _id: userId });
           const partner = await UserDetail.findOne({ _id: bestMatch });
           // Once notifications begin, do not roll both claims back on a later failure.

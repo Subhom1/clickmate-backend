@@ -7,6 +7,44 @@ import { createSearchService } from '../../services/searchService.js';
 
 const enabled = process.env.RUN_MONGODB_INTEGRATION === '1';
 
+test('a replaced candidate is not claimed using an old comparison', { skip: !enabled, timeout: 15000 }, async () => {
+  const replica = await MongoMemoryReplSet.create({ replSet: { count: 1, ip: '127.0.0.1' } });
+  let service, alice, bob, release;
+  try {
+    await mongoose.connect(replica.getUri('clickmate_claim_identity_test'));
+    await Search.init();
+    alice = new mongoose.Types.ObjectId().toString();
+    bob = new mongoose.Types.ObjectId().toString();
+    await Search.create({ userId: bob, searchId: 'old-candidate', query: 'old activity' });
+    let started;
+    const comparing = new Promise(resolve => { started = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    const events = [];
+    service = createSearchService({ to: room => ({ emit: (event, payload) => events.push({ room, event, payload }) }) }, {
+      compare: async () => { started(); await gate; return { similarity_score: 0.9 }; },
+    });
+    await service.startSearch(alice, 'activity', { id: 'alice-socket' });
+    await comparing;
+    await Search.updateOne({ userId: bob }, { searchId: 'replacement', query: 'different activity' });
+    release();
+    const deadline = Date.now() + 5000;
+    while (!service.getMetrics().failedPairClaims && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(service.getMetrics().failedPairClaims, 1);
+    const candidate = await Search.findOne({ userId: bob }).lean();
+    const initiator = await Search.findOne({ userId: alice }).lean();
+    assert.equal(candidate.searchId, 'replacement');
+    assert.equal(candidate.isLocked, false);
+    assert.equal(initiator.isLocked, false);
+    assert.deepEqual(events, []);
+  } finally {
+    release?.();
+    try { if (service && alice) await service.cleanupSearch(alice); if (bob) await Search.deleteOne({ userId: bob }); }
+    finally { await mongoose.disconnect(); await replica.stop(); }
+  }
+});
+
 test('sequential search attempts persist distinct identities in MongoDB', { skip: !enabled }, async () => {
   const replica = await MongoMemoryReplSet.create({ replSet: { count: 1, ip: '127.0.0.1' } });
   let service, id;
