@@ -257,6 +257,35 @@ test("search continues polling when the other participant cannot be locked", asy
   });
 });
 
+test("pair claims use the initiating and scored attempt identities", async () => {
+  await fakeTimers(async ({ scheduled }) => {
+    candidates = [{ userId: bobId, searchId: "candidate-attempt", query: "close", created_at: new Date() }];
+    lockResults = [{ _id: aliceId }, null];
+    const io = makeIO();
+    const service = createSearchService(io, { compare: async () => ({ similarity_score: 0.9 }) });
+    await service.startSearch(aliceId, "query", { id: "socket-a" });
+    const initiatingId = calls.upserts[0][1].searchId;
+    await scheduled.shift().callback();
+    assert.deepEqual(calls.locks[0][0], { userId: aliceId, searchId: initiatingId, isLocked: { $ne: true } });
+    assert.deepEqual(calls.locks[1][0], { userId: bobId, searchId: "candidate-attempt", isLocked: { $ne: true } });
+    assert.equal(io.events.length, 0);
+  });
+});
+
+test("a failed initiating-attempt claim does not claim the candidate", async () => {
+  await fakeTimers(async ({ scheduled }) => {
+    candidates = [{ userId: bobId, searchId: "candidate-attempt", query: "close", created_at: new Date() }];
+    lockResults = [null];
+    const io = makeIO();
+    const service = createSearchService(io, { compare: async () => ({ similarity_score: 0.9 }) });
+    await service.startSearch(aliceId, "query", { id: "socket-a" });
+    await scheduled.shift().callback();
+    assert.equal(calls.locks.length, 1);
+    assert.equal(io.events.length, 0);
+    assert.equal(service.getMetrics().failedPairClaims, 1);
+  });
+});
+
 test("metrics count candidates, uncached comparisons and failed claims without exposing search data", async () => {
   await fakeTimers(async ({ scheduled }) => {
     candidates = [{ userId: bobId, query: "private candidate", created_at: new Date() }];
