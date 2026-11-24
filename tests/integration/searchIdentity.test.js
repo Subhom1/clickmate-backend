@@ -75,3 +75,51 @@ test('delayed cleanup cannot delete or unlock a newer local attempt in MongoDB',
     finally { await mongoose.disconnect(); await replica.stop(); }
   }
 });
+
+test('a delayed timeout cannot expire or notify for a replacement in MongoDB', { skip: !enabled, timeout: 45000 }, async () => {
+  const replica = await MongoMemoryReplSet.create({ replSet: { count: 1, ip: '127.0.0.1' } });
+  const originalDelete = Search.deleteOne;
+  let service, id, release, pendingExpiry;
+  try {
+    await mongoose.connect(replica.getUri('clickmate_timeout_test'));
+    await Search.init();
+    id = new mongoose.Types.ObjectId().toString();
+    const events = [];
+    service = createSearchService({ to: room => ({ emit: (event, payload) => events.push({ room, event, payload }) }) }, { compare: async () => ({ similarity_score: 0 }) });
+    await service.startSearch(id, 'old', { id: 'old-socket' });
+    const old = await Search.findOne({ userId: id }).lean();
+    let notifyExpiry;
+    const started = new Promise((resolve) => { notifyExpiry = resolve; });
+    const gate = new Promise((resolve) => { release = resolve; });
+    Search.deleteOne = function (filter, ...args) {
+      if (filter.searchId === old.searchId && filter.isLocked) {
+        pendingExpiry = gate.then(() => originalDelete.call(this, filter, ...args));
+        notifyExpiry();
+        return pendingExpiry;
+      }
+      return originalDelete.call(this, filter, ...args);
+    };
+    let deadline;
+    try { await Promise.race([started, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('Timeout deletion did not begin')), 40000); })]); }
+    finally { clearTimeout(deadline); }
+    await service.startSearch(id, 'new', { id: 'new-socket' });
+    const next = await Search.findOne({ userId: id }).lean();
+    assert.notEqual(next.searchId, old.searchId);
+    await Search.updateOne({ userId: id, searchId: next.searchId }, { $set: { isLocked: true } });
+    release();
+    await pendingExpiry;
+    await new Promise((resolve) => setImmediate(resolve));
+    const after = await Search.findOne({ userId: id }).lean();
+    assert.equal(after?.searchId, next.searchId);
+    assert.equal(after?.isLocked, true);
+    assert.equal(events.length, 0);
+    assert.equal(service.getMetrics().activeSearches, 1);
+    await service.cleanupSocketSearches('new-socket');
+  } finally {
+    release?.();
+    if (pendingExpiry) await pendingExpiry.catch(() => {});
+    Search.deleteOne = originalDelete;
+    try { if (service && id) await service.cleanupSocketSearches('new-socket'); }
+    finally { await mongoose.disconnect(); await replica.stop(); }
+  }
+});

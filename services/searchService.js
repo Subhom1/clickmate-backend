@@ -62,7 +62,7 @@ export const createSearchService = (io, similarityService) => {
   const lockUser = (userId) => UserSearch.findOneAndUpdate(
     { userId, isLocked: { $ne: true } }, { isLocked: true }, { new: true }
   );
-  const unlockUser = (userId) => UserSearch.findOneAndUpdate({ userId }, { isLocked: false });
+  const unlockUser = (userId, searchId) => UserSearch.findOneAndUpdate({ userId, searchId }, { isLocked: false });
   const unlockClaim = (claim) => UserSearch.findOneAndUpdate(
     { _id: claim._id, isLocked: true }, { isLocked: false }
   );
@@ -87,20 +87,45 @@ export const createSearchService = (io, similarityService) => {
     return false;
   };
 
-  const findMatch = (userId, query, schedule) => {
+  const findMatch = (userId, query, schedule, searchId) => {
     const startedAt = Date.now();
     let cancelled = false;
     let timer = null;
     const similarityCache = new Map();
     const cancel = () => { cancelled = true; if (timer) clearTimeout(timer); };
-    const scheduleNextCheck = () => {
+    const scheduleWork = (callback) => {
       if (cancelled) return;
-      timer = setTimeout(checkForMatches, CHECK_INTERVAL);
       const search = ongoingSearches.get(userId);
-      if (search) search.timer = timer;
+      if (search?.searchId !== searchId) return;
+      timer = setTimeout(callback, CHECK_INTERVAL);
+      search.timer = timer;
     };
+    const scheduleNextCheck = () => scheduleWork(checkForMatches);
     let attempts = 0;
     const maxAttempts = SEARCH_TIMEOUT / CHECK_INTERVAL;
+
+    const expireSearch = async () => {
+      if (cancelled || ongoingSearches.get(userId)?.searchId !== searchId) return;
+      try {
+        const expired = await UserSearch.deleteOne({ userId, searchId, isLocked: { $ne: true } });
+        if (cancelled || ongoingSearches.get(userId)?.searchId !== searchId) return;
+        if (!expired.deletedCount) {
+          const current = await UserSearch.findOne({ userId, searchId }).lean();
+          if (cancelled || ongoingSearches.get(userId)?.searchId !== searchId) return;
+          if (current) return scheduleWork(expireSearch);
+          ongoingSearches.delete(userId);
+          return;
+        }
+        metrics.timeouts++;
+        io.to(userRoom(userId)).emit("search_update", { matches: null, message: "No result found" });
+        ongoingSearches.delete(userId);
+      } catch (error) {
+        if (cancelled || ongoingSearches.get(userId)?.searchId !== searchId) return;
+        console.error("Error during search expiration:", error);
+        io.to(userRoom(userId)).emit("error", { message: "An error occurred while checking for matches." });
+        ongoingSearches.delete(userId);
+      }
+    };
 
     const checkForMatches = async () => {
       if (cancelled) return;
@@ -172,20 +197,14 @@ export const createSearchService = (io, similarityService) => {
         }
 
         if (attempts < maxAttempts && !cancelled) return scheduleNextCheck();
-        if (!cancelled) metrics.timeouts++;
-        io.to(userRoom(userId)).emit("search_update", cancelled
-          ? { cancel: true, message: "Search has been cancelled" }
-          : { matches: null, message: "No result found" });
-        await UserSearch.deleteOne({ userId });
-        await unlockUser(userId);
-        ongoingSearches.delete(userId);
+        return expireSearch();
       } catch (error) {
         if (claims) await Promise.all(claims.map(unlockClaim));
-        if (cancelled) return;
+        if (cancelled || ongoingSearches.get(userId)?.searchId !== searchId) return;
         console.error("Error during match checking:", error);
         io.to(userRoom(userId)).emit("error", { message: "An error occurred while checking for matches." });
-        if (!claims) await unlockUser(userId);
-        ongoingSearches.delete(userId);
+        if (!claims) await unlockUser(userId, searchId);
+        if (ongoingSearches.get(userId)?.searchId === searchId) ongoingSearches.delete(userId);
       }
     };
 
@@ -205,7 +224,7 @@ export const createSearchService = (io, similarityService) => {
       { userId }, { searchId, query, ...schedule, created_at: new Date(), isLocked: false },
       { upsert: true, runValidators: true }
     );
-    const search = findMatch(userId, query, schedule);
+    const search = findMatch(userId, query, schedule, searchId);
     ongoingSearches.set(userId, { searchId, socket, ...search });
   };
 

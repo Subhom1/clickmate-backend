@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 
-const calls = { upserts: [], deletes: [], locks: [], searches: [], users: [] };
+const calls = { upserts: [], deletes: [], locks: [], searches: [], users: [], lookups: [] };
 let candidates;
 let findError;
 let lockResults;
 let userFindError;
 let deleteHook;
+let findOneHook;
 const userSearch = {
   findOneAndUpdate: async (...args) => {
     if (args[0]?.isLocked?.$ne === true) {
@@ -22,6 +23,10 @@ const userSearch = {
   deleteOne: async (...args) => {
     calls.deletes.push(args);
     return deleteHook ? deleteHook(...args) : { deletedCount: 1 };
+  },
+  findOne: (...args) => {
+    calls.lookups.push(args);
+    return { lean: async () => findOneHook ? findOneHook(...args) : null };
   },
   find: (...args) => {
     calls.searches.push(args);
@@ -67,6 +72,7 @@ beforeEach(() => {
   findError = null;
   userFindError = null;
   deleteHook = null;
+  findOneHook = null;
   lockResults = [{ _id: aliceId }, { _id: bobId }];
 });
 
@@ -285,6 +291,154 @@ test("metrics distinguish stopped searches and timeouts", async () => {
     for (let attempt = 0; attempt < 30; attempt++) await scheduled.shift().callback();
     assert.equal(service.getMetrics().timeouts, 1);
     assert.equal(service.getMetrics().activeSearches, 0);
+  });
+});
+
+test("normal timeout deletes the unlocked attempt before emitting exactly once", async () => {
+  await fakeTimers(async ({ scheduled }) => {
+    const io = makeIO();
+    const service = createSearchService(io, { compare: async () => ({ similarity_score: 0 }) });
+    await service.startSearch(aliceId, "query", { id: "socket-a" });
+    const searchId = calls.upserts[0][1].searchId;
+    for (let attempt = 0; attempt < 30; attempt++) await scheduled.shift().callback();
+    assert.deepEqual(calls.deletes.at(-1)[0], { userId: aliceId, searchId, isLocked: { $ne: true } });
+    assert.deepEqual(io.events, [{ room: `user:${aliceId}`, name: "search_update", payload: { matches: null, message: "No result found" } }]);
+    assert.equal(calls.locks.length, 0, "timeout must not unlock a later search");
+    assert.equal(service.getMetrics().timeouts, 1);
+    assert.equal(service.getMetrics().activeSearches, 0);
+    assert.equal(scheduled.length, 0);
+  });
+});
+
+test("a timeout that cannot delete a claimed attempt retries without emitting", async () => {
+  await fakeTimers(async ({ scheduled }) => {
+    const io = makeIO();
+    const service = createSearchService(io, { compare: async () => ({ similarity_score: 0 }) });
+    await service.startSearch(aliceId, "query", { id: "socket-a" });
+    const searchId = calls.upserts[0][1].searchId;
+    for (let attempt = 0; attempt < 29; attempt++) await scheduled.shift().callback();
+    deleteHook = () => ({ deletedCount: 0 });
+    findOneHook = () => ({ userId: aliceId, searchId, isLocked: true });
+    await scheduled.shift().callback();
+    assert.deepEqual(calls.deletes.at(-1)[0], { userId: aliceId, searchId, isLocked: { $ne: true } });
+    assert.deepEqual(calls.lookups.at(-1)[0], { userId: aliceId, searchId });
+    assert.deepEqual(io.events, []);
+    assert.equal(service.getMetrics().timeouts, 0);
+    assert.equal(service.getMetrics().activeSearches, 1);
+    assert.equal(scheduled.length, 1);
+    assert.equal(scheduled[0].timer.delay, 1000);
+    assert.equal(calls.locks.length, 0);
+  });
+});
+
+test("an expired attempt retries expiration, not matching, after a claim releases", async () => {
+  await fakeTimers(async ({ scheduled }) => {
+    const io = makeIO();
+    let comparisons = 0;
+    const service = createSearchService(io, { compare: async () => { comparisons++; return { similarity_score: 0.9 }; } });
+    await service.startSearch(aliceId, "query", { id: "socket-a" });
+    const searchId = calls.upserts[0][1].searchId;
+    for (let attempt = 0; attempt < 29; attempt++) await scheduled.shift().callback();
+    const row = { userId: aliceId, searchId, isLocked: true };
+    deleteHook = () => ({ deletedCount: row.isLocked ? 0 : 1 });
+    findOneHook = () => row;
+    await scheduled.shift().callback();
+    assert.equal(scheduled.length, 1);
+    const queriesBeforeRetry = calls.searches.length;
+    row.isLocked = false;
+    candidates = [{ userId: bobId, query: "compatible", created_at: new Date() }];
+    await scheduled.shift().callback();
+    assert.equal(calls.searches.length, queriesBeforeRetry, "expiry retry must not search for candidates");
+    assert.equal(comparisons, 0);
+    assert.deepEqual(io.events, [{ room: `user:${aliceId}`, name: "search_update", payload: { matches: null, message: "No result found" } }]);
+    assert.equal(service.getMetrics().timeouts, 1);
+    assert.equal(service.getMetrics().activeSearches, 0);
+    assert.equal(scheduled.length, 0);
+    assert.equal(calls.locks.length, 0);
+  });
+});
+
+test("failed expiry lookup does not unlock another worker's claim", async () => {
+  await fakeTimers(async ({ scheduled }) => {
+    const io = makeIO();
+    const service = createSearchService(io, { compare: async () => ({ similarity_score: 0 }) });
+    await service.startSearch(aliceId, "query", { id: "socket-a" });
+    const searchId = calls.upserts[0][1].searchId;
+    for (let attempt = 0; attempt < 29; attempt++) await scheduled.shift().callback();
+    deleteHook = () => ({ deletedCount: 0 });
+    findOneHook = () => { throw new Error("database unavailable"); };
+    const original = console.error;
+    console.error = () => {};
+    try { await scheduled.shift().callback(); } finally { console.error = original; }
+    assert.deepEqual(calls.lookups.at(-1)[0], { userId: aliceId, searchId });
+    assert.equal(calls.locks.length, 0, "expiry must not unlock a claim owned by another worker");
+    assert.deepEqual(io.events, [{ room: `user:${aliceId}`, name: "error", payload: { message: "An error occurred while checking for matches." } }]);
+    assert.equal(service.getMetrics().timeouts, 0);
+  });
+});
+
+test("a timeout stops without retrying if its attempt is missing or replaced", async () => {
+  await fakeTimers(async ({ scheduled }) => {
+    const io = makeIO();
+    const service = createSearchService(io, { compare: async () => ({ similarity_score: 0 }) });
+    await service.startSearch(aliceId, "query", { id: "socket-a" });
+    const searchId = calls.upserts[0][1].searchId;
+    for (let attempt = 0; attempt < 29; attempt++) await scheduled.shift().callback();
+    deleteHook = () => ({ deletedCount: 0 });
+    findOneHook = () => null;
+    await scheduled.shift().callback();
+    assert.deepEqual(calls.lookups.at(-1)[0], { userId: aliceId, searchId });
+    assert.deepEqual(io.events, []);
+    assert.equal(service.getMetrics().timeouts, 0);
+    assert.equal(service.getMetrics().activeSearches, 0);
+    assert.equal(scheduled.length, 0);
+    assert.equal(calls.locks.length, 0);
+  });
+});
+
+test("a delayed old timeout cannot notify, delete, unlock, or remove a replacement", async () => {
+  await fakeTimers(async ({ scheduled }) => {
+    const io = makeIO();
+    const service = createSearchService(io, { compare: async () => ({ similarity_score: 0 }) });
+    await service.startSearch(aliceId, "old", { id: "old-socket" });
+    const oldId = calls.upserts[0][1].searchId;
+    for (let attempt = 0; attempt < 29; attempt++) await scheduled.shift().callback();
+    let row = { userId: aliceId, searchId: oldId, isLocked: false };
+    let releaseDelete;
+    let markDeleteStarted;
+    const started = new Promise((resolve) => { markDeleteStarted = resolve; });
+    const gate = new Promise((resolve) => { releaseDelete = resolve; });
+    let firstDelete = true;
+    deleteHook = async (filter) => {
+      if (firstDelete) { firstDelete = false; markDeleteStarted(); await gate; }
+      const matches = row && row.userId === filter.userId &&
+        (filter.searchId === undefined || row.searchId === filter.searchId) &&
+        (!filter.isLocked || row.isLocked !== true);
+      if (matches) row = null;
+      return { deletedCount: matches ? 1 : 0 };
+    };
+    findOneHook = (filter) => row?.userId === filter.userId && row?.searchId === filter.searchId ? row : null;
+    const timeout = scheduled.shift().callback();
+    await started;
+    try {
+      assert.deepEqual(io.events, [], "timeout must wait for conditional deletion");
+      await service.startSearch(aliceId, "new", { id: "new-socket" });
+      const newId = calls.upserts[1][1].searchId;
+      row = { userId: aliceId, searchId: newId, isLocked: true };
+      releaseDelete();
+      await timeout;
+      assert.deepEqual(calls.deletes.at(-2)[0], { userId: aliceId, searchId: oldId, isLocked: { $ne: true } });
+      assert.deepEqual(row, { userId: aliceId, searchId: newId, isLocked: true });
+      assert.deepEqual(io.events, []);
+      assert.equal(calls.locks.length, 0);
+      assert.equal(service.getMetrics().timeouts, 0);
+      assert.equal(service.getMetrics().activeSearches, 1);
+      await service.cleanupSocketSearches("new-socket");
+      assert.equal(service.getMetrics().activeSearches, 0);
+    } finally {
+      releaseDelete();
+      await timeout;
+    }
   });
 });
 

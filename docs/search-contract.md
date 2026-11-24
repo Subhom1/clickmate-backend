@@ -68,11 +68,19 @@ an older writer may also retain an ID on a different attempt. Concurrent new
 writers can leave a local ID out of sync with the persisted record. Locally
 tracked cleanup now deletes only the captured attempt ID and removes the local
 entry only if it still refers to that attempt. IDs are not yet sent to clients.
-Cleanup no longer performs a user-only unlock after deleting a record. Cleanup without a local ID still
-uses a user-only fallback. Locks, timeout, replacement, and notifications are
-not yet guarded by the ID. This does not establish ordering or prevent stale
-work across concurrent requests and instances; mixed-version writers can
-reuse an old ID. M05 and the lifecycle guarantees below remain incomplete.
+Cleanup no longer performs a user-only unlock after deleting a record. Cleanup
+without a local ID still uses a user-only fallback. Local timeout work now
+deletes only the captured, unlocked attempt before sending a timeout. A locked
+attempt retries expiration without restarting candidate comparisons; a missing
+or locally replaced attempt stops without a timeout. The search error path
+unlocks only its captured ID. A permanently locked record can keep retrying,
+and a database failure during expiry can leave a searchable record after the
+local timer stops. Locks acquired by other workers, replacement, and match
+notifications are not fully guarded by attempt identity. A remote replacement
+can occur between deletion and the room event, which has no attempt ID; an
+older mixed-version writer may reuse an ID. This does not establish ordering
+or prevent stale work across instances. M05 and the lifecycle guarantees below
+remain incomplete.
 
 ## Lifecycle guarantees to implement
 

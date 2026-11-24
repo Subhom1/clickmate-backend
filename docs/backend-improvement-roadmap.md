@@ -15,8 +15,8 @@ the remaining reliability work in
   before coding. Keep its acceptance condition.
 - Never mark a task complete because code exists only on an unmerged branch.
 
-**Current:** M05.2.1 — guard locally tracked cleanup (pending PR merge).
-**Next:** M05.2.2 — guard claims, timeout, replacement, and notification.
+**Current:** M05.2.2.1 — guard local timeout expiration (pending PR merge).
+**Next:** M05.2.2.2 — guard claims, replacement, and notification across instances.
 **Blocked:** M03.2.2 needs resource guards; the 100-user exploratory burst
 left all searches unresolved. M04.2 claim and replacement races remain.
 
@@ -82,10 +82,17 @@ and identifies current gaps.
     `fcf6eb4cc7a236dc53c36bd9c34cf7001a2125a5`.
   - [ ] **M05.2 Guard stale work:** condition operations on attempt identity
     and define a safe transition from old records and clients.
-    - [ ] **M05.2.1 Local cleanup:** guard a captured local attempt against
+    - [x] **M05.2.1 Local cleanup:** guard a captured local attempt against
       deleting, unlocking, or removing its replacement when IDs are distinct.
+      Merged in [PR #38](https://github.com/Subhom1/clickmate-backend/pull/38)
+      as `19bea4bde1dc53b2128aa749bc54ed14a7c6de2d`.
     - [ ] **M05.2.2 Remaining operations:** guard claims, timeout, replacement
       and notification, including old clients and mixed-version servers.
+      - [ ] **M05.2.2.1 Local timeout:** condition expiration deletion on the
+        captured attempt ID and unlocked state; stop stale local timers before
+        they notify or remove a newer local attempt.
+      - [ ] **M05.2.2.2 Distributed lifecycle:** protect claims, replacement,
+        timeout delivery, and notification across instances and mixed versions.
 - [ ] **M06 Explicit states.** Model waiting, claiming or matched, cancelled,
   and expired with conditional transitions. Define which outcome wins when
   cancellation races with matching. **Done when:** every transition is
@@ -207,7 +214,8 @@ and identifies current gaps.
 | 2026-11-15 | M09a | `feature/search-date-time` | [PR #28](https://github.com/Subhom1/clickmate-backend/pull/28), merged `d653d17099a15d78fb0cc8718fe939692d6b8c75` | 46 focused tests passed; `npm test` passed (195 tests and syntax); `git diff --check` passed | M01 |
 | 2026-11-16 | M01 | `docs/search-contract-m01` | [PR #29](https://github.com/Subhom1/clickmate-backend/pull/29), merged `5792441f17b8c7b09794052718bfc7467933af36` | `git diff --check`: passed; GitHub backend regression and coverage check passed | M02 |
 | 2026-11-17 | M02.1 | `feat/search-metrics-m02-1` | [PR #30](https://github.com/Subhom1/clickmate-backend/pull/30) merged `b1cdc23dbbc122f9cc98573d072a1db6e7532ba8` | `node --experimental-test-module-mocks --test tests/unit/services/searchService.test.js`: 11 passed; `npm test`: 197 passed and syntax check passed with loopback access | M02.2 |
-| 2026-11-23 | M05.2.1 | `fix/search-cleanup-identity-m05-2-1` | [PR #38](https://github.com/Subhom1/clickmate-backend/pull/38) open | Focused search tests: 22 passed; `npm test`: 224 passed, 3 opt-in integration tests skipped, syntax passed; `RUN_MONGODB_INTEGRATION=1 node --test tests/integration/searchIdentity.test.js`: 2 passed | User-only fallback, mixed-version and claim/timeout races remain |
+| 2026-11-24 | M05.2.2.1 | `fix/search-timeout-identity-m05-2-2` | PR pending | Focused search tests: 28 passed; `npm test`: 230 passed, 4 opt-in integration tests skipped, syntax passed; `RUN_MONGODB_INTEGRATION=1 node --test tests/integration/searchIdentity.test.js`: 3 passed | Distributed timeout delivery, locked-row recovery, and claim/replacement races remain |
+| 2026-11-23 | M05.2.1 | `fix/search-cleanup-identity-m05-2-1` | [PR #38](https://github.com/Subhom1/clickmate-backend/pull/38) merged `19bea4bde1dc53b2128aa749bc54ed14a7c6de2d` | Focused search tests: 22 passed; `npm test`: 224 passed, 3 opt-in integration tests skipped, syntax passed; `RUN_MONGODB_INTEGRATION=1 node --test tests/integration/searchIdentity.test.js`: 2 passed | User-only fallback, mixed-version and claim/timeout races remain |
 | 2026-11-23 | M05.1 | `feat/search-attempt-identity-m05-1` | [PR #37](https://github.com/Subhom1/clickmate-backend/pull/37) merged `fcf6eb4cc7a236dc53c36bd9c34cf7001a2125a5` | Focused service/schema tests: 30 passed; `npm test`: 222 passed, 2 opt-in integration tests skipped, syntax passed; `RUN_MONGODB_INTEGRATION=1 node --test tests/integration/searchIdentity.test.js`: 1 passed | IDs alone do not prevent stale work; M05.2 must add guards |
 | 2026-11-23 | M04.2.1 | `fix/search-claim-rollback-m04-2-1` | [PR #36](https://github.com/Subhom1/clickmate-backend/pull/36) merged `5164dcb5d62cb317f3783ada8a8bf12d36d840b2` | `node --experimental-test-module-mocks --test tests/unit/services/searchService.test.js`: 19 passed; `npm test`: 220 passed, 1 integration test skipped, syntax passed (loopback access); `git diff --check`: passed | M04.2.2 claim ownership and lifecycle races remain |
 | 2026-11-23 | M09b.1 | `feat/search-timezone-m09b` | [PR #35](https://github.com/Subhom1/clickmate-backend/pull/35) merged `a1c7208ca4323d289420e2d2801667c7d1f3ae4d` | Focused timezone/socket/search tests: 47 passed; `npm test`: 220 passed, 1 integration test skipped, syntax passed; `RUN_MONGODB_INTEGRATION=1 node --test tests/integration/searchTimezone.test.js`: 1 passed | M09b.2 mobile integration and platform verification remain |
@@ -254,3 +262,9 @@ here with a PR or discussion link. Do not silently drop a roadmap item.
 - **2026-11-23, M05.2:** Split locally tracked cleanup from the remaining
   claim, timeout, replacement and notification work. The user-only fallback
   and mixed-version/cross-instance races remain until later slices.
+
+- **2026-11-24, M05.2.2:** Split local timeout expiration from distributed
+  lifecycle work. A local timeout must first delete the captured unlocked
+  attempt, and a locked attempt retries expiration without starting another
+  match comparison. This does not guarantee correct timeout delivery across
+  instances, recover indefinitely locked rows, or resolve claim ownership.
