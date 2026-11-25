@@ -36,6 +36,7 @@ export const removeUploadedFiles = async (files = []) => {
 };
 
 export const validateUploadedSignatures = async (files) => {
+  // Check the saved bytes; filenames and MIME types come from the client.
   const allowed = new Set(["image/jpeg", "image/png", "image/gif"]);
   for (const file of files) {
     const detected = await fileTypeFromFile(file.path);

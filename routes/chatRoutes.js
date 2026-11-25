@@ -14,6 +14,7 @@ router.post("/create-chat", authenticate, loadAuthenticatedUser, async (req, res
     if (user1Id === user2Id) return res.status(400).send("A user cannot chat with themselves");
     if (![user1Id, user2Id].includes(req.user._id.toString())) return res.status(403).json({ message: "You must be a chat participant" });
     const key = [user1Id, user2Id].sort().join(":");
+    // Either participant order should find the same chat, including older records.
     const existingChat = await Chat.findOne({ $or: [{ conversationKey: key }, { participants: { $all: [user1Id, user2Id] } }] });
     if (existingChat) {
       if (!existingChat.conversationKey) await Chat.updateOne({ _id: existingChat._id }, { $set: { conversationKey: key } });

@@ -3,8 +3,7 @@ const GRACE_MS = 60 * 60 * 1000;
 export function createAvatarCleanup({ assets, users, storage, now = () => new Date() }) {
   return async function cleanup() {
     const cutoff = new Date(now().getTime() - GRACE_MS);
-    // Validated assets can still be attached by an in-flight confirmation.
-    // Retain them until attachment and cleanup can coordinate durably.
+    // Leave validated uploads alone: a confirmation may still be attaching them.
     const query = { purpose: "avatar", bucket: storage.bucket, status: { $in: ["pending", "ready"] }, expiresAt: { $lt: cutoff } };
     let lastId;
     let removed = 0;

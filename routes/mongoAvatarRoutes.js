@@ -40,6 +40,7 @@ router.get("/v1/avatar-files/:mediaId", authenticate, async (req, res) => {
     const file = await service.read(req.params.mediaId, size);
     if (!file) return res.status(404).json({ message: "Avatar not found" });
     res.set("Content-Type", "image/jpeg");
+    // Cache authenticated images privately and keep different users' responses separate.
     res.set("Cache-Control", "private, max-age=300");
     res.set("Vary", "Authorization");
     res.send(file.bytes);

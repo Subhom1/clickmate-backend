@@ -7,6 +7,7 @@ async function readBounded(body, expectedSize) {
   const chunks = [];
   let size = 0;
   for await (const chunk of body) {
+    // Enforce the limit while reading, even if storage reported a smaller size.
     size += chunk.length;
     if (size > MAX_AVATAR_BYTES) {
       body.destroy?.();
@@ -18,8 +19,8 @@ async function readBounded(body, expectedSize) {
   return Buffer.concat(chunks, size);
 }
 
-// Creates an object outside the signed upload key. The caller must persist the
-// returned key before referencing it from a profile, then clean up on failure.
+// Save checked bytes at a new key the upload URL cannot overwrite.
+// The caller must record this key before attachment, or delete it on failure.
 export async function canonicalizeUpload(asset, storage) {
   const head = await storage.head(asset.objectKey);
   if (head.ContentLength !== asset.sizeBytes || head.ContentLength > MAX_AVATAR_BYTES) {

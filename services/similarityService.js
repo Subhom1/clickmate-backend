@@ -5,6 +5,7 @@ import { createInterface } from "readline";
 export const createSimilarityService = (pythonBin) => {
   let worker;
   let ready = false;
+  // One Python process handles comparisons; request IDs connect replies to callers.
   const pending = new Map();
   const metrics = { embeddings: 0, workerFailures: 0, maxPending: 0 };
 
@@ -15,7 +16,7 @@ export const createSimilarityService = (pythonBin) => {
       stdio: ["pipe", "pipe", "pipe"],
     });
     const lines = createInterface({ input: worker.stdout });
-    // Clear every waiting comparison when the Python process cannot continue.
+    // Reject waiting comparisons if the worker stops or fails to start.
     const failWorker = (error) => {
       if (failed) return;
       failed = true;

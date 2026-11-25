@@ -11,6 +11,7 @@ export function createUploadSessionService({ assets, storage, consumeQuota }) {
       throw new MediaClientError("Invalid avatar upload request", 400);
     }
     await consumeQuota(ownerId);
+    // Reserve a pending upload; confirmation checks the bytes before attaching it.
     const objectKey = `avatars/${randomUUID()}`;
     const signed = await storage.createUpload(objectKey, input.contentType, input.sizeBytes, SESSION_SECONDS);
     const expiresAt = signed.expiresAt;

@@ -6,6 +6,7 @@ export const connectDatabase = async (mongoUri, io, adapterEnabled) => {
   console.log("Connected to MongoDB");
 
   if (adapterEnabled) {
+    // Share socket events across servers and expire old events after an hour.
     const adapterCollection = mongoose.connection
       .getClient()
       .db()
