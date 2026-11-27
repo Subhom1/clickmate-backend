@@ -23,11 +23,13 @@ export function createMongoAvatarService({ users, files }) {
         ? await resizeJpeg(image.bytes, MAX_STORED_SIDE, 82)
         : image.bytes;
       const width = Math.min(image.width, MAX_STORED_SIDE);
+      // Prepare common display sizes once so reads usually need no resizing.
       const [smallBytes, mediumBytes] = await Promise.all([
         resizeJpeg(bytes, 128, 68), resizeJpeg(bytes, 256, 76),
       ]);
       const file = await files.create({ ownerId, bytes, smallBytes, mediumBytes, contentType: "image/jpeg", width, height: width });
       let previous;
+      // Attach the new file before deleting the old one; remove it if attachment fails.
       try {
         previous = await users.findOneAndUpdate({ _id: ownerId }, { $set: { avatarFileId: file._id } }, { new: false });
         if (!previous) {
@@ -52,6 +54,7 @@ export function createMongoAvatarService({ users, files }) {
       if (!file) return null;
       if (size === 512 || file.width <= size) return file;
       const variant = variants[size];
+      // Older files may not have saved thumbnails yet.
       return { ...(file.toObject?.() ?? file), bytes: file[variant.field] || await resizeJpeg(file.bytes, size, variant.quality), width: size, height: size };
     },
     async remove(ownerId) {

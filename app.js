@@ -68,6 +68,7 @@ app.use(async (error, req, res, next) => {
 });
 
 const startServer = async () => {
+  // Accept requests only after MongoDB and the matching worker are ready.
   await connectDatabase(config.mongoUri, io, config.socketAdapterEnabled);
   await similarityService.start();
   if (process.env.MEDIA_S3_BUCKET && process.env.MEDIA_S3_REGION) {
@@ -86,6 +87,7 @@ startServer().catch((error) => {
 });
 
 const shutdown = async (signal) => {
+  // Stop background work and close HTTP before disconnecting MongoDB.
   console.log(`${signal} received, shutting down`);
   similarityService.stop();
   if (avatarCleanupTimer) clearInterval(avatarCleanupTimer);

@@ -12,7 +12,7 @@ export const registerSocketHandlers = (io, searchService) => {
     try {
       const auth = await admin.auth().verifyIdToken(token);
       const email = normalizeEmail(auth.email);
-      // Prefer the immutable UID; use email only to find an unlinked legacy profile.
+      // Find the Firebase account first; email supports older, unlinked profiles.
       let user = auth.uid ? await UserDetail.findOne({ firebaseUid: auth.uid }) : null;
       if (!user && email) user = await UserDetail.findOne({ email });
       if (!user || (user.firebaseUid && user.firebaseUid !== auth.uid)) {
@@ -30,6 +30,7 @@ export const registerSocketHandlers = (io, searchService) => {
   io.on("connection", (socket) => {
     console.log("New WebSocket connection", socket.id);
     socket.join(searchService.userRoom(socket.user._id.toString()));
+    // Limit each event type separately for this socket connection.
     const eventAllowed = (name, max, windowMs = 60000) => {
       const now = Date.now();
       const state = socket.data.limits || (socket.data.limits = {});
@@ -51,6 +52,7 @@ export const registerSocketHandlers = (io, searchService) => {
       if (date != null && !isValidSearchDate(date)) return socket.emit("error", { message: "Invalid date. Use YYYY-MM-DD." });
       if (time != null && !isValidSearchTime(time)) return socket.emit("error", { message: "Invalid time. Use HH:mm." });
       const schedule = { date: date ?? null, time: time ?? null };
+      // Validate timezone details before replacing the user's active search.
       if (timeZone != null || utcOffsetMinutes != null) {
         try {
           searchAvailability({ date, time, timeZone, utcOffsetMinutes });
@@ -67,6 +69,7 @@ export const registerSocketHandlers = (io, searchService) => {
       if (userId === socket.user._id.toString() && isValidObjectId(userId)) await searchService.cleanupSearch(userId);
     });
     socket.on("joinChat", async ({ chatId } = {}) => {
+      // Knowing a chat ID is not enough; the user must belong to that chat.
       if (!isValidObjectId(chatId)) return;
       if (await Chat.exists({ _id: chatId, participants: socket.user._id })) socket.join(chatId);
     });

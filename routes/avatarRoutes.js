@@ -9,6 +9,7 @@ import UserDetail from "../models/UserDetailSchema.js";
 import { createCompleteAvatarService } from "../services/media/completeAvatar.js";
 import { createAvatarProfileService } from "../services/media/avatarProfile.js";
 
+// Create storage on demand so other routes can start without S3 configuration.
 const storage = createS3Storage;
 
 export default createAvatarRouter({

@@ -1,7 +1,7 @@
 const HALF_WINDOW_MS = 30 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;
 
-/** Convert an explicitly offset local time into a one-hour availability interval. */
+/** Convert local time and its UTC offset into a one-hour matching window. */
 export function searchAvailability({ date, time, timeZone, utcOffsetMinutes } = {}) {
   const dateParts = typeof date === 'string' && /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
   const timeParts = typeof time === 'string' && /^(\d{2}):(\d{2})$/.exec(time);
@@ -37,6 +37,7 @@ export function searchAvailability({ date, time, timeZone, utcOffsetMinutes } = 
     throw new Error('Invalid time zone');
   }
   const instant = local.getTime() - utcOffsetMinutes * MINUTE_MS;
+  // Convert back in the chosen zone to catch wrong offsets and skipped clock times.
   const fields = Object.fromEntries(formatter.formatToParts(new Date(instant)).map(({ type, value }) => [type, value]));
   if (Number(fields.year) !== year || Number(fields.month) !== month || Number(fields.day) !== day ||
       Number(fields.hour) !== hour || Number(fields.minute) !== minute) {
@@ -45,7 +46,7 @@ export function searchAvailability({ date, time, timeZone, utcOffsetMinutes } = 
   return { startMs: instant - HALF_WINDOW_MS, endMs: instant + HALF_WINDOW_MS };
 }
 
-/** Inclusive endpoints preserve the existing 60-minute tolerance. */
+/** Touching windows count as a match, allowing times exactly 60 minutes apart. */
 export function availabilityOverlaps(first, second) {
   return first.startMs <= second.endMs && second.startMs <= first.endMs;
 }

@@ -14,6 +14,7 @@ const loadLocalEnv = () => {
     const key = trimmedLine.slice(0, separatorIndex).trim();
     const value = trimmedLine.slice(separatorIndex + 1).trim();
     if (key && process.env[key] === undefined) {
+      // Local defaults must not override settings supplied by the host.
       process.env[key] = value.replace(/^["']|["']$/g, "");
     }
   }

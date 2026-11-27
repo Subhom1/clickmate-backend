@@ -4,9 +4,11 @@ import sys
 from sentence_transformers import SentenceTransformer, util
 
 
+# Load the model once and reuse it for every comparison.
 model = SentenceTransformer("paraphrase-mpnet-base-v2")
 print(json.dumps({"ready": True}), flush=True)
 
+# Each input line gets one JSON reply with the same request ID.
 for line in sys.stdin:
     request_id = None
     embedding_count = 0

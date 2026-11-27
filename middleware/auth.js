@@ -41,6 +41,7 @@ export const loadAuthenticatedUser = async (req, res, next) => {
     }
 
     if (!user.firebaseUid) {
+      // Link older profiles to the verified Firebase account for future requests.
       await UserDetail.updateOne(
         { _id: user._id },
         { $set: { firebaseUid: req.auth.uid } }

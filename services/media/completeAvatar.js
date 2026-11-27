@@ -19,6 +19,7 @@ export function createCompleteAvatarService({ assets, users, storage, now = () =
     let asset = await assets.findOne({ _id: mediaId, ownerId, purpose: "avatar" });
     if (!asset) throw clientError("UPLOAD_NOT_FOUND", 404);
     if (asset.status === "ready") {
+      // A repeated confirmation succeeds only while this is still the current avatar.
       const user = await users.findById(ownerId);
       if (String(user?.avatarMediaId) !== String(asset._id)) throw clientError("UPLOAD_ALREADY_USED", 409);
       return { mediaId: String(asset._id), width: asset.width, height: asset.height, contentType: asset.contentType };
@@ -27,6 +28,7 @@ export function createCompleteAvatarService({ assets, users, storage, now = () =
       if (!asset.expiresAt || asset.expiresAt <= now()) throw clientError("UPLOAD_EXPIRED", 410);
       const canonical = await canonicalizeUpload(asset, storage);
       let committed;
+      // Save the checked copy only if this upload is still pending and unexpired.
       try {
         committed = await assets.findOneAndUpdate({ _id: mediaId, ownerId, status: "pending", expiresAt: { $gt: now() } },
           { $set: { canonicalKey: canonical.objectKey, contentType: canonical.contentType,
@@ -45,8 +47,7 @@ export function createCompleteAvatarService({ assets, users, storage, now = () =
       const current = await users.findById(ownerId);
       if (String(current?.avatarMediaId) !== String(asset._id)) throw clientError("UPLOAD_EXPIRED", 410);
     }
-    // Compare the observed profile value so simultaneous confirmations cannot
-    // silently replace one another. The later upload may still replace an older one.
+    // Retry if the profile changes mid-update; an older upload must not replace a newer one.
     let attached = false;
     for (let attempt = 0; attempt < 5; attempt++) {
       const user = await users.findById(ownerId);

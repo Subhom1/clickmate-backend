@@ -48,7 +48,7 @@ export async function runLocal(count, markerFile, output) {
     const health = await fetch(`${serverUrl}/health`);
     if (!health.ok) throw new Error('Local backend is not healthy');
     const users = [];
-    // Bound setup concurrency; the measured submission burst starts after every connection is ready.
+    // Connect in small batches, then submit searches together once everyone is ready.
     for (let first = 0; first < count; first += 20) {
       const batch = await Promise.allSettled(Array.from({ length: Math.min(20, count - first) }, async (_, offset) => {
         const email = `${runId}-${first + offset}@example.test`;
@@ -81,7 +81,7 @@ export async function runLocal(count, markerFile, output) {
       user.socket.emit('submit_keyword', { userId: user.id, query: 'Play a friendly game of chess' });
       results.submitted++;
     }
-    // A fixed observation window retains unresolved searches as unresolved, not zero-latency decisions.
+    // Stop watching after a fixed time; unfinished searches have no measured latency.
     await new Promise((resolve) => setTimeout(resolve, 45000));
     results.durationSeconds = (performance.now() - started) / 1000;
     results.unresolved = count - seen.size;
@@ -89,7 +89,7 @@ export async function runLocal(count, markerFile, output) {
     return results;
   } finally {
     for (const socket of sockets) socket.disconnect();
-    // Delete only the profiles created by this run. Search cleanup is handled by socket disconnect.
+    // Remove only this run's profiles; disconnecting sockets cleans up their searches.
     if (userIds.length) await db.collection('user').deleteMany({ _id: { $in: userIds } });
     await mongoose.disconnect();
   }

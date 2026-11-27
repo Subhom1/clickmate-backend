@@ -10,6 +10,7 @@ const router = Router();
 
 router.post("/register", authenticate, async (req, res) => {
   const { name, email } = req.body;
+  // Use the verified account email when creating the profile.
   const normalizedEmail = normalizeEmail(req.auth.email);
   const normalizedName = typeof name === "string" ? name.trim() : "";
   if (!normalizedName || !normalizedEmail || (email && normalizeEmail(email) !== normalizedEmail)) {
@@ -68,6 +69,7 @@ router.patch("/user/:userId", authenticate, loadAuthenticatedUser, requireOwnUse
     const { userId } = req.params;
     if (!isValidObjectId(userId)) return res.status(400).json({ message: "Invalid user ID" });
     const updateFields = { updated_at: new Date() };
+    // Copy only editable profile fields from the request.
     if (req.body.fullname) updateFields.fullname = req.body.fullname;
     if (req.body.bio !== undefined) updateFields.bio = req.body.bio == "" ? "No Bio" : req.body.bio;
     if (req.body.interests) updateFields.interests = req.body.interests;

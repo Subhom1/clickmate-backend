@@ -2,6 +2,7 @@ import { Router } from "express";
 import { MediaClientError } from "./MediaClientError.js";
 
 export function createAvatarRouter({ authenticate, loadUser, createSession, complete, getProfile, remove }) {
+  // Expose known client errors; keep storage and database details out of responses.
   const router = Router();
   router.post("/v1/me/avatar/uploads", authenticate, loadUser, async (req, res) => {
     try {

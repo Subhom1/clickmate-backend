@@ -18,6 +18,7 @@ const minutesToTime = (minutes) =>
   `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
 
 const scheduleFilter = ({ date, time, availabilityStart, availabilityEnd }) => {
+  // Narrow candidates by schedule before asking the worker to compare their text.
   if (availabilityStart && availabilityEnd) {
     return { $or: [
       { availabilityStart: { $lte: availabilityEnd }, availabilityEnd: { $gte: availabilityStart } },
@@ -44,6 +45,7 @@ const scheduleMatches = (search, candidate) => {
     { startMs: new Date(search.availabilityStart).getTime(), endMs: new Date(search.availabilityEnd).getTime() },
     { startMs: new Date(candidate.availabilityStart).getTime(), endMs: new Date(candidate.availabilityEnd).getTime() }
   );
+  // Without an offset, only an unrestricted search can match a zoned one.
   if (searchZoned) return !candidate.date && !candidate.time;
   if (candidateZoned) return !search.date && !search.time;
   if (search.date && candidate.date && search.date !== candidate.date) return false;
@@ -54,11 +56,12 @@ const scheduleMatches = (search, candidate) => {
 
 export const createSearchService = (io, similarityService) => {
   const ongoingSearches = new Map();
-  // Process-local observations only; no search text or user identifiers are stored.
+  // These counters stay on this server and contain no search text or user IDs.
   const metrics = { candidates: 0, comparisons: 0, cancellations: 0, timeouts: 0,
     failedPairClaims: 0, matches: 0, matchLatencyMsTotal: 0, matchLatencyMsMax: 0 };
   const userRoom = (userId) => `user:${userId}`;
 
+  // Claim this attempt only; the user may have started another search meanwhile.
   const lockUser = (userId, searchId) => UserSearch.findOneAndUpdate(
     { userId, searchId, isLocked: { $ne: true } }, { isLocked: true }, { new: true }
   );
@@ -72,7 +75,7 @@ export const createSearchService = (io, similarityService) => {
     if (currentSearch) metrics.cancellations++;
     if (currentSearch?.timer) clearTimeout(currentSearch.timer);
     currentSearch?.cancel?.();
-    // A delayed cleanup must not delete a later locally tracked attempt.
+    // Keep a newer local search if it starts while this cleanup is waiting.
     const filter = currentSearch?.searchId ? { userId, searchId: currentSearch.searchId } : { userId };
     await UserSearch.deleteOne(filter);
     if (ongoingSearches.get(userId) === currentSearch) ongoingSearches.delete(userId);
@@ -83,6 +86,7 @@ export const createSearchService = (io, similarityService) => {
     if (!selfLocked) return false;
     const otherLocked = await lockUser(candidate.userId, candidate.searchId ?? null);
     if (otherLocked) return [selfLocked, otherLocked];
+    // If the partner was already claimed, release our half of the pair.
     await unlockClaim(selfLocked);
     return false;
   };
@@ -110,6 +114,7 @@ export const createSearchService = (io, similarityService) => {
         const expired = await UserSearch.deleteOne({ userId, searchId, isLocked: { $ne: true } });
         if (cancelled || ongoingSearches.get(userId)?.searchId !== searchId) return;
         if (!expired.deletedCount) {
+          // A claimed search may still produce a match, so give it more time.
           const current = await UserSearch.findOne({ userId, searchId }).lean();
           if (cancelled || ongoingSearches.get(userId)?.searchId !== searchId) return;
           if (current) return scheduleWork(expireSearch);
@@ -146,6 +151,7 @@ export const createSearchService = (io, similarityService) => {
           const otherUserId = candidate.userId.toString();
           try {
             const timestamp = candidate.created_at ? new Date(candidate.created_at).getTime() : 0;
+            // Reuse scores for this attempt without carrying them into a new search.
             const cacheKey = `${otherUserId}:${candidate.searchId ?? "legacy"}:${timestamp}`;
             let result = similarityCache.get(cacheKey);
             if (!result) {
@@ -170,11 +176,11 @@ export const createSearchService = (io, similarityService) => {
             metrics.failedPairClaims++;
             return scheduleNextCheck();
           }
-          // Read both profiles before stopping the partner loop or notifying either user.
+          // Load both profiles while we can still release the pair if a lookup fails.
           bestMatch = bestMatch.userId.toString();
           const user = await UserDetail.findOne({ _id: userId });
           const partner = await UserDetail.findOne({ _id: bestMatch });
-          // Once notifications begin, do not roll both claims back on a later failure.
+          // After notifications begin, releasing the pair could cause another match.
           claims = null;
           ongoingSearches.get(bestMatch)?.cancel?.();
           clearTimeout(timer);
@@ -220,6 +226,7 @@ export const createSearchService = (io, similarityService) => {
       availabilityStart: interval ? new Date(interval.startMs) : null,
       availabilityEnd: interval ? new Date(interval.endMs) : null };
     await cleanupSearch(userId);
+    // Give each submission its own ID so old callbacks can recognize a replacement.
     const searchId = randomUUID();
     await UserSearch.findOneAndUpdate(
       { userId }, { searchId, query, ...schedule, created_at: new Date(), isLocked: false },
